@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import { APP_SERVER_REQUIRED_METHODS } from "../src/app-server/compatibility.js";
 import {
   AppServerSchemaError,
+  combineSchemaQualifications,
   parseAndQualifyStableSchema,
+  qualifyApprovalSchemaBundle,
   qualifyStableSchemaBundle,
 } from "../src/app-server/schema-qualification.js";
 
@@ -17,20 +19,44 @@ const expectedRefs = {
   "turn/interrupt": "#/definitions/TurnInterruptParams",
 };
 
-function schema(methods = expectedRefs) {
+const expectedNotificationRefs = {
+  "turn/started": "#/definitions/TurnStartedNotification",
+  "item/agentMessage/delta": "#/definitions/AgentMessageDeltaNotification",
+  "turn/completed": "#/definitions/TurnCompletedNotification",
+};
+
+const expectedApprovalRefs = {
+  "item/commandExecution/requestApproval": "#/definitions/CommandExecutionRequestApprovalParams",
+  "item/fileChange/requestApproval": "#/definitions/FileChangeRequestApprovalParams",
+};
+
+function variant(method, ref, { request = false } = {}) {
+  return {
+    type: "object",
+    required: request ? ["id", "method", "params"] : ["method", "params"],
+    properties: {
+      ...(request ? { id: { $ref: "#/definitions/RequestId" } } : {}),
+      method: { type: "string", enum: [method] },
+      params: { $ref: ref },
+    },
+  };
+}
+
+function schema(methods = expectedRefs, notifications = expectedNotificationRefs) {
   return {
     definitions: {
       ClientRequest: {
-        oneOf: Object.entries(methods).map(([method, ref]) => ({
-          type: "object",
-          required: ["id", "method", "params"],
-          properties: {
-            id: { $ref: "#/definitions/RequestId" },
-            method: { type: "string", enum: [method] },
-            params: { $ref: ref },
-          },
-        })),
+        oneOf: Object.entries(methods).map(([method, ref]) => variant(method, ref, { request: true })),
       },
+      ServerNotification: { oneOf: Object.entries(notifications).map(([method, ref]) => variant(method, ref)) },
+    },
+  };
+}
+
+function approvalSchema(requests = expectedApprovalRefs) {
+  return {
+    definitions: {
+      ServerRequest: { oneOf: Object.entries(requests).map(([method, ref]) => variant(method, ref, { request: true })) },
     },
   };
 }
@@ -48,6 +74,35 @@ test("allows additive unrelated request methods", () => {
     "account/read": "#/definitions/AccountReadParams",
   }));
   assert.equal(result.schemaSubsetCompatible, true);
+});
+
+test("requires all consumed notification variants while preserving client method results", () => {
+  const notifications = { ...expectedNotificationRefs };
+  delete notifications["turn/completed"];
+  const missing = qualifyStableSchemaBundle(schema(expectedRefs, notifications));
+  assert.equal(missing.schemaSubsetCompatible, false);
+  assert.ok(APP_SERVER_REQUIRED_METHODS.every((method) => missing.methods[method] === true));
+
+  const wrong = qualifyStableSchemaBundle(schema(expectedRefs, {
+    ...expectedNotificationRefs,
+    "turn/started": "#/definitions/WrongNotification",
+  }));
+  assert.equal(wrong.schemaSubsetCompatible, false);
+});
+
+test("allows additive notifications but rejects duplicate consumed notification variants", () => {
+  const additive = schema(expectedRefs, {
+    ...expectedNotificationRefs,
+    "item/other": "#/definitions/OtherNotification",
+  });
+  additive.definitions.ServerNotification.oneOf[0].properties.extra = { type: "string" };
+  assert.equal(qualifyStableSchemaBundle(additive).schemaSubsetCompatible, true);
+
+  const duplicate = schema();
+  duplicate.definitions.ServerNotification.oneOf.push(
+    structuredClone(duplicate.definitions.ServerNotification.oneOf[0]),
+  );
+  assert.equal(qualifyStableSchemaBundle(duplicate).schemaSubsetCompatible, false);
 });
 
 test("marks a missing required method incompatible", () => {
@@ -109,4 +164,70 @@ test("does not discover required methods in descriptions or arbitrary strings", 
   const result = qualifyStableSchemaBundle(bundle);
   assert.equal(result.methods["turn/interrupt"], false);
   assert.equal(result.schemaSubsetCompatible, false);
+});
+
+test("does not discover required notifications in descriptions or arbitrary strings", () => {
+  const notifications = { ...expectedNotificationRefs };
+  delete notifications["turn/completed"];
+  const bundle = schema(expectedRefs, notifications);
+  bundle.description = "turn/completed";
+  bundle.definitions.Unrelated = { const: "turn/completed" };
+  assert.equal(qualifyStableSchemaBundle(bundle).schemaSubsetCompatible, false);
+});
+
+test("qualifies exact approval server-request variants", () => {
+  const result = qualifyApprovalSchemaBundle(approvalSchema());
+  assert.deepEqual(result, {
+    schemaSubsetCompatible: true,
+    serverRequests: {
+      "item/commandExecution/requestApproval": true,
+      "item/fileChange/requestApproval": true,
+    },
+  });
+});
+
+test("marks missing, duplicate, malformed, and wrong approval variants incompatible", () => {
+  const missing = { ...expectedApprovalRefs };
+  delete missing["item/fileChange/requestApproval"];
+  assert.equal(qualifyApprovalSchemaBundle(approvalSchema(missing)).schemaSubsetCompatible, false);
+
+  const wrong = qualifyApprovalSchemaBundle(approvalSchema({
+    ...expectedApprovalRefs,
+    "item/fileChange/requestApproval": "#/definitions/WrongParams",
+  }));
+  assert.equal(wrong.schemaSubsetCompatible, false);
+
+  const duplicate = approvalSchema();
+  duplicate.definitions.ServerRequest.oneOf.push(structuredClone(duplicate.definitions.ServerRequest.oneOf[0]));
+  assert.equal(qualifyApprovalSchemaBundle(duplicate).schemaSubsetCompatible, false);
+
+  const malformed = approvalSchema();
+  malformed.definitions.ServerRequest.oneOf[0] = { method: "item/commandExecution/requestApproval" };
+  assert.equal(qualifyApprovalSchemaBundle(malformed).schemaSubsetCompatible, false);
+});
+
+test("rejects invalid approval root structure without raw content", () => {
+  assert.throws(
+    () => qualifyApprovalSchemaBundle({ definitions: { ServerRequest: { oneOf: "sensitive root schema" } } }),
+    (error) => error instanceof AppServerSchemaError
+      && error.details.reason === "invalid_schema_structure"
+      && !JSON.stringify(error).includes("sensitive root schema"),
+  );
+});
+
+test("combines stable and approval qualifications into the existing handshake shape", () => {
+  const stable = qualifyStableSchemaBundle(schema());
+  const approvals = qualifyApprovalSchemaBundle(approvalSchema());
+  assert.deepEqual(combineSchemaQualifications(stable, approvals), {
+    schemaSubsetCompatible: true,
+    methods: stable.methods,
+  });
+
+  const missingApprovals = qualifyApprovalSchemaBundle(approvalSchema({
+    "item/commandExecution/requestApproval": expectedApprovalRefs["item/commandExecution/requestApproval"],
+  }));
+  const combined = combineSchemaQualifications(stable, missingApprovals);
+  assert.equal(combined.schemaSubsetCompatible, false);
+  assert.deepEqual(combined.methods, stable.methods);
+  assert.deepEqual(Object.keys(combined).sort(), ["methods", "schemaSubsetCompatible"]);
 });

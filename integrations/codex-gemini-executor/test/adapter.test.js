@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { APP_SERVER_REQUIRED_METHODS } from "../src/app-server/compatibility.js";
 import { createAppServerCompatibilityAdapter } from "../src/app-server/adapter.js";
 import { createStableHandshakeDriver } from "../src/app-server/handshake.js";
-import { qualifyStableSchemaBundle } from "../src/app-server/schema-qualification.js";
+import { combineSchemaQualifications, qualifyApprovalSchemaBundle, qualifyStableSchemaBundle } from "../src/app-server/schema-qualification.js";
 
 const methods = () => Object.fromEntries(APP_SERVER_REQUIRED_METHODS.map((name) => [name, true]));
 const options = (overrides = {}) => ({
@@ -68,7 +68,7 @@ test("absorbs rejected asynchronous warning delivery", async () => {
   await new Promise((resolve) => setImmediate(resolve));
 });
 
-function generatedSchema({ includeInterrupt = true } = {}) {
+function generatedSchema({ includeInterrupt = true, includeCompleted = true } = {}) {
   const refs = {
     initialize: "#/definitions/InitializeParams",
     "model/list": "#/definitions/ModelListParams",
@@ -88,11 +88,37 @@ function generatedSchema({ includeInterrupt = true } = {}) {
           },
         })),
       },
+      ServerNotification: {
+        oneOf: [
+          ["turn/started", "#/definitions/TurnStartedNotification"],
+          ["item/agentMessage/delta", "#/definitions/AgentMessageDeltaNotification"],
+          ...(includeCompleted ? [["turn/completed", "#/definitions/TurnCompletedNotification"]] : []),
+        ].map(([method, ref]) => ({
+          required: ["method", "params"],
+          properties: { method: { enum: [method] }, params: { $ref: ref } },
+        })),
+      },
     },
   };
 }
 
-function composedAdapter({ includeInterrupt = true } = {}) {
+function generatedApprovalSchema({ includeFileChange = true } = {}) {
+  return {
+    definitions: {
+      ServerRequest: {
+        oneOf: [
+          ["item/commandExecution/requestApproval", "#/definitions/CommandExecutionRequestApprovalParams"],
+          ...(includeFileChange ? [["item/fileChange/requestApproval", "#/definitions/FileChangeRequestApprovalParams"]] : []),
+        ].map(([method, ref]) => ({
+          required: ["id", "method", "params"],
+          properties: { id: { $ref: "#/definitions/RequestId" }, method: { enum: [method] }, params: { $ref: ref } },
+        })),
+      },
+    },
+  };
+}
+
+function composedAdapter({ includeInterrupt = true, includeCompleted = true, includeFileChange = true } = {}) {
   const warnings = [];
   const client = {
     async request(method) {
@@ -111,7 +137,10 @@ function composedAdapter({ includeInterrupt = true } = {}) {
   };
   const driver = createStableHandshakeDriver({
     client,
-    schemaQualification: qualifyStableSchemaBundle(generatedSchema({ includeInterrupt })),
+    schemaQualification: combineSchemaQualifications(
+      qualifyStableSchemaBundle(generatedSchema({ includeInterrupt, includeCompleted })),
+      qualifyApprovalSchemaBundle(generatedApprovalSchema({ includeFileChange })),
+    ),
   });
   return {
     warnings,
@@ -137,4 +166,9 @@ test("composition gates on capabilities while version and hash changes only warn
     assert.deepEqual(error.details.missingCapabilities, ["turn/interrupt"]);
     return true;
   });
+});
+
+test("composition fails closed when required notifications or approval requests are absent", async () => {
+  await assert.rejects(composedAdapter({ includeCompleted: false }).adapter.check(), { code: "app_server_incompatible" });
+  await assert.rejects(composedAdapter({ includeFileChange: false }).adapter.check(), { code: "app_server_incompatible" });
 });

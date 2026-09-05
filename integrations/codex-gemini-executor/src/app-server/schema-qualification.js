@@ -9,6 +9,17 @@ const EXPECTED_PARAMETER_REFS = Object.freeze({
   "turn/interrupt": "#/definitions/TurnInterruptParams",
 });
 
+const EXPECTED_NOTIFICATION_REFS = Object.freeze({
+  "turn/started": "#/definitions/TurnStartedNotification",
+  "item/agentMessage/delta": "#/definitions/AgentMessageDeltaNotification",
+  "turn/completed": "#/definitions/TurnCompletedNotification",
+});
+
+const EXPECTED_APPROVAL_REFS = Object.freeze({
+  "item/commandExecution/requestApproval": "#/definitions/CommandExecutionRequestApprovalParams",
+  "item/fileChange/requestApproval": "#/definitions/FileChangeRequestApprovalParams",
+});
+
 export class AppServerSchemaError extends Error {
   constructor(reason) {
     super("App Server schema qualification failure");
@@ -29,32 +40,73 @@ function variantMethod(variant) {
     : undefined;
 }
 
-function isCompatibleVariant(variant, method) {
+function isCompatibleVariant(variant, method, expectedRef, requiresId) {
   if (!isObject(variant) || !isObject(variant.properties)) return false;
   if (!Array.isArray(variant.required)) return false;
-  if (!["id", "method", "params"].every((name) => variant.required.includes(name))) return false;
+  const requiredFields = requiresId ? ["id", "method", "params"] : ["method", "params"];
+  if (!requiredFields.every((name) => variant.required.includes(name))) return false;
   return variantMethod(variant) === method
-    && variant.properties.params?.$ref === EXPECTED_PARAMETER_REFS[method];
+    && variant.properties.params?.$ref === expectedRef;
+}
+
+function qualifyVariants(variants, expectedRefs, { requiresId }) {
+  return Object.fromEntries(Object.entries(expectedRefs).map(([method, ref]) => {
+    const matches = variants.filter((variant) => variantMethod(variant) === method);
+    return [method, matches.length === 1 && isCompatibleVariant(matches[0], method, ref, requiresId)];
+  }));
+}
+
+function allCompatible(compatibility) {
+  return Object.values(compatibility).every(Boolean);
 }
 
 export function qualifyStableSchemaBundle(bundle) {
-  const variants = bundle?.definitions?.ClientRequest?.oneOf;
-  if (!isObject(bundle) || !Array.isArray(variants)) {
+  const clientVariants = bundle?.definitions?.ClientRequest?.oneOf;
+  const notificationVariants = bundle?.definitions?.ServerNotification?.oneOf;
+  if (!isObject(bundle) || !Array.isArray(clientVariants) || !Array.isArray(notificationVariants)) {
     throw new AppServerSchemaError("invalid_schema_structure");
   }
 
-  const compatibility = {};
-  for (const method of Object.keys(EXPECTED_PARAMETER_REFS)) {
-    const matches = variants.filter((variant) => variantMethod(variant) === method);
-    compatibility[method] = matches.length === 1 && isCompatibleVariant(matches[0], method);
-  }
+  const clientCompatibility = qualifyVariants(clientVariants, EXPECTED_PARAMETER_REFS, { requiresId: true });
+  const notificationCompatibility = qualifyVariants(notificationVariants, EXPECTED_NOTIFICATION_REFS, { requiresId: false });
 
   const methods = Object.fromEntries(
-    APP_SERVER_REQUIRED_METHODS.map((method) => [method, compatibility[method] === true]),
+    APP_SERVER_REQUIRED_METHODS.map((method) => [method, clientCompatibility[method] === true]),
   );
   return {
-    schemaSubsetCompatible: Object.values(compatibility).every(Boolean),
+    schemaSubsetCompatible: allCompatible(clientCompatibility) && allCompatible(notificationCompatibility),
     methods,
+  };
+}
+
+export function qualifyApprovalSchemaBundle(bundle) {
+  const variants = bundle?.definitions?.ServerRequest?.oneOf;
+  if (!isObject(bundle) || !Array.isArray(variants)) {
+    throw new AppServerSchemaError("invalid_schema_structure");
+  }
+  const serverRequests = qualifyVariants(variants, EXPECTED_APPROVAL_REFS, { requiresId: true });
+  return { schemaSubsetCompatible: allCompatible(serverRequests), serverRequests };
+}
+
+function hasMethodShape(value) {
+  return isObject(value?.methods)
+    && APP_SERVER_REQUIRED_METHODS.every((method) => typeof value.methods[method] === "boolean");
+}
+
+function safeMethods(value) {
+  return Object.fromEntries(APP_SERVER_REQUIRED_METHODS.map((method) => [method, value?.methods?.[method] === true]));
+}
+
+export function combineSchemaQualifications(stable, approvals) {
+  const stableValid = typeof stable?.schemaSubsetCompatible === "boolean" && hasMethodShape(stable);
+  const approvalsValid = typeof approvals?.schemaSubsetCompatible === "boolean"
+    && isObject(approvals.serverRequests)
+    && Object.keys(EXPECTED_APPROVAL_REFS).every((method) => typeof approvals.serverRequests[method] === "boolean");
+  return {
+    schemaSubsetCompatible: stableValid && approvalsValid
+      && stable.schemaSubsetCompatible === true
+      && approvals.schemaSubsetCompatible === true,
+    methods: safeMethods(stable),
   };
 }
 
