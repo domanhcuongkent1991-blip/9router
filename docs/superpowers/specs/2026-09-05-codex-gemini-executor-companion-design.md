@@ -94,6 +94,20 @@ Selected. Codex Desktop remains the user-facing coordinator, while an isolated
 App Server session uses Gemini as the reasoning model and the Codex harness as
 the controlled execution layer.
 
+### App Server compatibility policy
+
+Three policies were considered:
+
+- strict version allowlisting is easy to reason about but would disable the
+  companion after harmless Desktop updates;
+- capability checks scattered through executor code tolerate updates but make
+  every subsystem depend on raw App Server protocol details;
+- a thin capability-first adapter localizes protocol changes while retaining
+  version and executable identity for warnings and debugging.
+
+The thin capability-first adapter is selected. Version mismatch alone warns; a
+missing or malformed required capability fails closed.
+
 ## Architecture
 
 ```text
@@ -106,6 +120,11 @@ Gemini Executor Companion
         |-- workspace validation and single-writer lock
         |-- job/session lifecycle, timeout, and cancellation
         |-- approval relay and secret redaction
+        v
+App Server Compatibility Adapter
+        |-- version observation and capability-first startup gate
+        |-- stable initialize handshake and read-only probes
+        |-- normalized commands, events, and compatibility errors
         v
 Isolated Codex App Server
         |-- separate CODEX_HOME
@@ -181,6 +200,60 @@ The executor:
 - propagates cancellation and cleans up known child processes;
 - persists only minimal job metadata required for continuation and recovery.
 
+### App Server compatibility adapter
+
+The companion talks to App Server only through one thin compatibility adapter.
+Executor, workspace, approval, and MCP code must not import raw App Server method
+names or parse raw App Server events directly.
+
+The adapter owns only:
+
+- reading and recording the configured executable path, version, and SHA-256 for
+  diagnostics and update detection;
+- performing the required `initialize` / `initialized` handshake on an
+  isolated child process;
+- using stable App Server APIs by default and omitting `experimentalApi` unless
+  a later approved design requires it;
+- checking the generated-schema subset and bounded read-only capabilities that
+  the companion actually consumes;
+- translating required thread, turn, event, approval, interrupt, and error
+  shapes into a stable internal companion contract;
+- rejecting malformed known events or missing required behavior without
+  guessing, switching executable, or silently dropping state.
+
+It does not own model routing, Gemini configuration, worktree creation, locks,
+job persistence, retries, redaction, or user-facing MCP schemas. This keeps
+Desktop update work localized to the adapter and its contract fixtures.
+
+Compatibility is capability-first. A new or previously untested Codex version
+is recorded and produces a warning, but version alone does not block execution.
+The adapter permits startup when its required schema subset, handshake, and
+read-only capability probes pass. It fails closed when any required behavior is
+missing or incompatible, regardless of the reported version.
+
+Startup ordering is fail closed:
+
+1. validate request syntax and the workspace path without modifying it;
+2. read the configured App Server executable identity for diagnostics;
+3. start App Server with the isolated `CODEX_HOME` and complete the stable
+   handshake;
+4. run bounded read-only capability probes and validate their shapes;
+5. mark the adapter ready;
+6. only then acquire a writer lock, create a worktree, or begin a task.
+
+Unknown top-level notifications may be ignored only when they are not used by
+the companion state machine and their contents are not persisted. A malformed
+or unknown shape for a required event fails the active job with
+`app_server_incompatible`.
+
+After a Codex Desktop update, qualification generates schemas from the recorded
+Desktop App Server executable into a disposable CodexScratch directory, compares
+only the adapter-consumed subset, runs adapter contract tests, and performs one
+read-only fake-provider handshake. Passing results update version/hash metadata
+and adapter fixtures without requiring changes elsewhere in the companion.
+Qualification never patches Desktop, uses a binary from `PATH`, or writes to a
+user workspace.
+
 ### Isolated Codex App Server
 
 The child App Server supplies the Codex harness. Each thread receives an
@@ -188,8 +261,10 @@ explicit model, effort, working directory, approval policy, and sandbox policy.
 
 Analysis jobs use a read-only sandbox. Code-changing jobs use workspace-write
 with one exact writable root. Network access is off by default. App Server and
-Codex CLI compatibility must be checked at startup; unsupported protocol or
-configuration versions fail closed with an actionable error.
+Codex CLI compatibility must be checked through the compatibility adapter at
+startup. Version changes are warnings and diagnostic evidence; missing required
+capabilities or incompatible protocol shapes fail closed before any workspace
+mutation with the user-facing message `Codex version chưa được hỗ trợ`.
 
 ### 9Router
 
@@ -315,8 +390,9 @@ Errors are categorized so the user receives a concrete recovery action:
 - `model_unavailable`: restore the configured Antigravity/Gemini model;
 - `provider_auth_failed`: reconnect Antigravity in 9Router;
 - `provider_quota_exceeded`: wait for quota reset or stop the Gemini task;
-- `app_server_incompatible`: keep GPT Plus active and use the CLI profile
-  fallback until compatibility is restored;
+- `app_server_incompatible`: report `Codex version chưa được hỗ trợ`, include
+  sanitized observed-version diagnostics, leave the workspace untouched, and
+  keep GPT Plus active while the adapter is updated;
 - `workspace_dirty`: review or checkpoint the user's existing changes;
 - `workspace_locked`: finish or cancel the existing writer job;
 - `approval_required`: obtain an explicit decision; do not auto-accept;
@@ -367,12 +443,15 @@ Agent 1 exclusively owns:
 - Responses/Gemini compatibility tests and contract documentation.
 
 Agent 1 must classify the existing dirty changes, exclude local logs and test
-runtime state, execute targeted compatibility tests, diagnose the previously
-stalled production build, and commit only the verified Responses scope.
+runtime state, execute targeted compatibility tests, diagnose the production
+build, and commit only the verified Responses scope.
 
-Phase 0 is a hard prerequisite. If the production build cannot succeed or the
-failure cannot be explained with evidence, companion implementation does not
-start.
+Phase 0 is the prerequisite for companion development. It is satisfied when the
+Responses/Gemini contract suite passes, the scoped diff is reviewed, and a
+rollback checkpoint is committed. A production build stopped solely by a
+documented machine-resource limit does not block offline-only Phase 1
+indefinitely, but the build remains a hard gate for live integration,
+installation, merge, and deployment.
 
 ### Phase 1: build the offline companion core
 
@@ -383,14 +462,17 @@ integrations/codex-gemini-executor/**
 ```
 
 Agent 2 creates the isolated package, input validation, workspace lock,
-lifecycle, redaction, and fake App Server/9Router tests. This phase uses no live
-provider calls.
+lifecycle, redaction, the compatibility-adapter interface and capability policy,
+and fake App Server/9Router tests. This phase uses no live provider calls and
+performs no Desktop or workspace mutation.
 
 ### Phase 2: connect the isolated App Server
 
-Agent 2 adds App Server startup, handshake, thread start/resume, event mapping,
-approval relay, cancellation, timeout, and child cleanup. The child environment
-must not load the parent Gemini MCP server.
+Agent 2 adds App Server startup, handshake, capability probes, thread
+start/resume, event mapping, approval relay, cancellation, timeout, and child
+cleanup exclusively behind the compatibility adapter. The child environment
+must not load the parent Gemini MCP server. Runtime uses stable App Server APIs
+only unless the project director separately approves an experimental dependency.
 
 ### Phase 3: controlled integration review
 
@@ -417,10 +499,12 @@ Create a configuration checkpoint, install the personal plugin/MCP, restart
 Codex Desktop once, and validate from a new task. Disabling or uninstalling the
 companion must leave both 9Router and GPT Plus unchanged.
 
-The installer records the verified absolute App Server executable path and
-version in companion configuration. Runtime startup fails closed if that file
-is missing or its version no longer satisfies the tested protocol contract;
-the companion never falls back to another executable found on `PATH`.
+The installer records the verified absolute App Server executable path, observed
+version, executable SHA-256, generated-schema fingerprint, and adapter contract
+version in companion configuration. Runtime warns when version or hash changes,
+then reruns the capability-first gate. It fails closed if the executable is
+missing or the required contract no longer passes; the companion never falls
+back to another executable found on `PATH`.
 
 ## Test Strategy
 
@@ -441,7 +525,12 @@ Development follows test-driven behavior at each boundary.
 
 ### App Server contract tests
 
+- record version/hash changes as warnings while allowing compatible capability
+  results;
+- reject missing capabilities, malformed handshakes, and incompatible required
+  event shapes before workspace mutation;
 - negotiate the actual installed App Server protocol and generated schema;
+- verify the stable initialize handshake and bounded read-only capability probe;
 - start and resume a fake-provider thread;
 - map progress, tool calls, approval requests, completion, failure, and
   cancellation;
@@ -473,9 +562,9 @@ as a single process to avoid excessive CPU use.
 
 | Risk | Likelihood | Impact | Mitigation | Exit or recovery |
 | --- | --- | --- | --- | --- |
-| Current production build remains stalled | Present | High | Diagnose and pass Phase 0 before companion work | Stop companion work; preserve the existing CLI-profile fallback |
+| Production build exceeds local memory budget | Present | High | Keep builds bounded; allow offline Phase 1 only after the scoped rollback checkpoint | Block live integration, installation, merge, and deployment until a production build passes |
 | Dirty working tree contaminates commits | Present | High | Explicit-file staging and cached-diff review; never use broad staging | Unstage only the incorrectly staged file and repeat scope review |
-| App Server protocol changes after a Codex update | Medium | High | Handshake/version check and tests against the installed executable | Disable the companion; GPT Plus and 9Router continue normally |
+| App Server protocol changes after a Codex update | Medium | High | Thin capability-first adapter, schema subset, handshake, and contract tests; keep version for warning/debug | Fail closed with `Codex version chưa được hỗ trợ` only when required behavior is incompatible; update the adapter in isolation |
 | Gemini loses namespace or tool-call data | Medium | High | Contract tests for namespace, additional tools, calls, and outputs | Fail the task; never report a false success |
 | Gemini modifies the wrong files | Low after controls | High | Dirty-check, dedicated worktree, exact writable root, writer lock | Cancel and inspect the retained worktree; do not merge |
 | Existing user changes are lost | Low after controls | Critical | Never stash/reset/clean; reject dirty write targets | Stop before process start and report the dirty paths |
@@ -537,6 +626,11 @@ The feature is eligible for installation only when all of the following hold:
 - low, medium, and high effort map consistently and `xhigh` is absent;
 - continuation, cancellation, timeout, upstream failure, and stale-process
   recovery are verified;
+- a new Desktop App Server version that retains the required contract starts
+  with a warning and recorded diagnostics rather than being rejected by version
+  alone;
+- missing required capability or malformed protocol data fails before acquiring
+  a writer lock, creating a worktree, or starting a task;
 - no secret, `.env` content, raw credential, or unrelated user change is stored,
   returned, staged, or committed;
 - two write jobs cannot target the same repository concurrently;
