@@ -10,7 +10,7 @@ const SENSITIVE_KEY = /^(?:authorization|proxy-authorization|cookie|set-cookie|x
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/giu;
 const JWT = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b/gu;
 const ASSIGNMENT = /\b(api[-_]?key|access[-_]?token|refresh[-_]?token|password|passwd|secret|client[-_]?secret)\s*([:=])\s*([^\s,;]+)/giu;
-const CREDENTIAL_HEADER = /(^|[\r\n])([ \t]*(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)[ \t]*[:=][ \t]*)([^\r\n]*)/gimu;
+const CREDENTIAL_HEADER = /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)[ \t]*[:=][ \t]*)([^\r\n]*)/gimu;
 const MAX_KNOWN_SECRETS = 64;
 
 export class CompanionRedactionError extends Error {
@@ -63,7 +63,7 @@ export function createCompanionRedactor(options = {}) {
     }
     let output = value;
     for (const secret of knownSecrets) output = replaceAllLiteral(output, secret);
-    output = output.replace(CREDENTIAL_HEADER, (_, boundary, label) => `${boundary}${label}${REDACTED}`);
+    output = output.replace(CREDENTIAL_HEADER, (_, label) => `${label}${REDACTED}`);
     output = output.replace(BEARER, "Bearer [REDACTED]");
     output = output.replace(JWT, REDACTED);
     output = output.replace(ASSIGNMENT, (_, key, separator) => (

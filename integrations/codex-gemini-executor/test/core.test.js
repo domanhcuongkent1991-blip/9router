@@ -70,6 +70,7 @@ function lifecycleCore(overrides = {}) {
     redactor: createCompanionRedactor({ knownSecrets: [SECRET] }),
     generateJobId: () => `job_${++nextId}`,
     cleanupTimeoutMs: 10,
+    persistenceTimeoutMs: 10,
     ...overrides,
   });
 }
@@ -431,7 +432,7 @@ test("reclaims a runtime that resolves after cancellation", async () => {
     dispose: async () => calls.push("dispose"),
   });
   await new Promise((resolve) => setTimeout(resolve, 25));
-  assert.deepEqual(calls, ["release", "cancel", "dispose"]);
+  assert.deepEqual(calls, ["cancel", "dispose", "release"]);
   assert.equal((await settlesWithin(running)).value.status, "cancelled");
 });
 
@@ -509,6 +510,110 @@ test("contains persistence failures at starting, running, and terminal snapshots
     assert.ok(persistCalls <= failAt);
     assert.ok(disposeCalls <= 1);
   }
+});
+
+test("bounds a hung terminal persistence write and resolves run and cancellation", async () => {
+  const terminalPersistStarted = deferred();
+  let persistCalls = 0;
+  const core = lifecycleCore({
+    persistStatus: async () => {
+      persistCalls += 1;
+      if (persistCalls === 3) {
+        terminalPersistStarted.resolve();
+        return new Promise(() => {});
+      }
+    },
+    generateJobId: () => "job_hung_terminal_persist",
+    persistenceTimeoutMs: 10,
+  });
+  const running = core.runGeminiTask(baseRequest);
+  await terminalPersistStarted.promise;
+  const cancelling = core.cancelGeminiTask("job_hung_terminal_persist");
+  const [runOutcome, cancelOutcome] = await Promise.all([
+    settlesWithin(running),
+    settlesWithin(cancelling),
+  ]);
+  assert.equal(runOutcome.timedOut, undefined);
+  assert.equal(cancelOutcome.timedOut, undefined);
+  assert.equal(runOutcome.value.status, "failed");
+  assert.equal(cancelOutcome.value.status, "failed");
+  assert.equal(runOutcome.value.error.category, "protocol_error");
+  assert.deepEqual(core.getGeminiStatus("job_hung_terminal_persist"), runOutcome.value);
+  assert.equal(persistCalls, 3);
+});
+
+async function leaseOutcome(leases, request) {
+  try {
+    return { lease: await leases.acquire(request) };
+  } catch (error) {
+    return { error };
+  }
+}
+
+test("holds a writer lease until an abandoned runtime resolves and is cleaned", async () => {
+  const runtimeStage = deferred();
+  const factoryStarted = deferred();
+  const runtimeDisposed = deferred();
+  const leases = createWorkspaceLeaseManager();
+  let cancelCalls = 0;
+  let disposeCalls = 0;
+  const request = { ...baseRequest, access: "workspace-write", effort: "medium", timeoutMinutes: 30 };
+  const core = lifecycleCore({
+    workspaceLeases: leases,
+    createRuntime: () => {
+      factoryStarted.resolve();
+      return runtimeStage.promise;
+    },
+    generateJobId: () => "job_hold_late_runtime",
+  });
+  const running = core.runGeminiTask({ ...baseRequest, access: "workspace-write" });
+  await factoryStarted.promise;
+  assert.equal((await core.cancelGeminiTask("job_hold_late_runtime")).status, "cancelled");
+
+  const blocked = await leaseOutcome(leases, request);
+  if (blocked.lease) await blocked.lease.release();
+  assert.equal(blocked.error?.code, "workspace_locked");
+
+  runtimeStage.resolve({
+    run: async () => ({ finalAnswer: "late", filesChanged: [], tests: [] }),
+    cancel: async () => { cancelCalls += 1; },
+    dispose: async () => { disposeCalls += 1; runtimeDisposed.resolve(); },
+  });
+  await runtimeDisposed.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  const available = await leases.acquire(request);
+  await available.release();
+  assert.equal(cancelCalls, 1);
+  assert.equal(disposeCalls, 1);
+  assert.equal((await running).status, "cancelled");
+});
+
+test("holds a writer lease until an abandoned runtime rejects", async () => {
+  const runtimeStage = deferred();
+  const factoryStarted = deferred();
+  const leases = createWorkspaceLeaseManager();
+  const request = { ...baseRequest, access: "workspace-write", effort: "medium", timeoutMinutes: 30 };
+  const core = lifecycleCore({
+    workspaceLeases: leases,
+    createRuntime: () => {
+      factoryStarted.resolve();
+      return runtimeStage.promise;
+    },
+    generateJobId: () => "job_hold_late_rejection",
+  });
+  const running = core.runGeminiTask({ ...baseRequest, access: "workspace-write" });
+  await factoryStarted.promise;
+  assert.equal((await core.cancelGeminiTask("job_hold_late_rejection")).status, "cancelled");
+
+  const blocked = await leaseOutcome(leases, request);
+  if (blocked.lease) await blocked.lease.release();
+  assert.equal(blocked.error?.code, "workspace_locked");
+
+  runtimeStage.reject(new Error(`late ${SECRET}`));
+  await new Promise((resolve) => setImmediate(resolve));
+  const available = await leases.acquire(request);
+  await available.release();
+  assert.equal((await running).status, "cancelled");
 });
 
 test("redacts split secret deltas before accumulation and terminal scrubbing", async () => {

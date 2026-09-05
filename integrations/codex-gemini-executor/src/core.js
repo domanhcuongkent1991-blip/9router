@@ -141,6 +141,7 @@ export function createGeminiCompanionCore({
   millisecondsPerMinute = 60_000,
   maxAccumulatedOutputBytes = 32 * 1024,
   cleanupTimeoutMs = 5_000,
+  persistenceTimeoutMs = 5_000,
 }) {
   requireDependency(typeof validateRequest === "function", "validate_request_required");
   requireDependency(typeof compatibilityAdapter?.check === "function", "compatibility_adapter_required");
@@ -155,6 +156,7 @@ export function createGeminiCompanionCore({
   requireDependency(Number.isInteger(millisecondsPerMinute) && millisecondsPerMinute > 0, "invalid_time_scale");
   requireDependency(Number.isInteger(maxAccumulatedOutputBytes) && maxAccumulatedOutputBytes > 0, "invalid_output_limit");
   requireDependency(Number.isInteger(cleanupTimeoutMs) && cleanupTimeoutMs > 0, "invalid_cleanup_timeout");
+  requireDependency(Number.isInteger(persistenceTimeoutMs) && persistenceTimeoutMs > 0, "invalid_persistence_timeout");
 
   const jobs = new Map();
   const runtimeCleanups = new WeakMap();
@@ -173,19 +175,30 @@ export function createGeminiCompanionCore({
     job.stopSignal?.reject(new StopRequested(category));
   }
 
-  async function awaitInterruptible(job, operation, onLateValue) {
+  async function awaitInterruptible(job, operation, {
+    onAbandon,
+    onLateValue,
+    onLateError,
+  } = {}) {
     let abandoned = false;
     const operationPromise = Promise.resolve().then(operation);
-    if (onLateValue) {
-      operationPromise.then((value) => {
-        if (!abandoned) return;
+    operationPromise.then(
+      (value) => {
+        if (!abandoned || !onLateValue) return;
         Promise.resolve().then(() => onLateValue(value)).catch(() => {});
-      }, () => {});
-    }
+      },
+      () => {
+        if (!abandoned || !onLateError) return;
+        Promise.resolve().then(() => onLateError()).catch(() => {});
+      },
+    );
     try {
       return await Promise.race([operationPromise, job.stopSignal.promise]);
     } catch (error) {
-      if (error instanceof StopRequested) abandoned = true;
+      if (error instanceof StopRequested) {
+        abandoned = true;
+        onAbandon?.();
+      }
       throw error;
     }
   }
@@ -212,15 +225,35 @@ export function createGeminiCompanionCore({
     }
   }
 
+  async function persistWithDeadline(snapshot) {
+    const operation = Promise.resolve().then(() => persistStatus(clone(snapshot)));
+    const observed = operation.then(
+      () => ({ succeeded: true }),
+      () => ({ succeeded: false }),
+    );
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ succeeded: false }), persistenceTimeoutMs);
+      timer.unref?.();
+    });
+    const outcome = await Promise.race([observed, timeout]);
+    clearTimeout(timer);
+    if (!outcome.succeeded) throw new PersistenceFailure();
+  }
+
   async function publish(job, patch, { interruptible = true } = {}) {
     const candidate = { ...job.snapshot, ...patch };
     if (candidate.status !== "awaiting_approval") delete candidate.approval;
     const next = redactor.redactJson(candidate);
     if (!ALLOWED_STATUSES.has(next.status)) throw new CompanionJobError("invalid_job_status", "unsupported_status");
-    job.snapshot = next;
-    if (job.persistenceFailed) return clone(next);
+    const terminal = TERMINAL_STATUSES.has(next.status);
+    if (!terminal) job.snapshot = next;
+    if (job.persistenceFailed) {
+      job.snapshot = next;
+      return clone(next);
+    }
 
-    const persist = () => persistStatus(clone(next));
+    const persist = () => persistWithDeadline(next);
     try {
       if (interruptible) await awaitInterruptible(job, persist);
       else await persist();
@@ -231,6 +264,7 @@ export function createGeminiCompanionCore({
       job.snapshot = persistenceFailureSnapshot(job);
       throw new PersistenceFailure();
     }
+    job.snapshot = next;
     return clone(next);
   }
 
@@ -342,7 +376,7 @@ export function createGeminiCompanionCore({
       const runtimeFailed = await cleanupRuntime(job.runtime, shouldCancel, deadline);
       failed ||= runtimeFailed;
     }
-    if (job.lease) {
+    if (job.lease && !job.leaseReleaseDeferred) {
       const leaseFailed = await releaseLease(job.lease, deadline);
       failed ||= leaseFailed;
     }
@@ -400,6 +434,7 @@ export function createGeminiCompanionCore({
       lease: null,
       stopCategory: null,
       persistenceFailed: false,
+      leaseReleaseDeferred: false,
     };
     // The rejection is observed here as well as by lifecycle races so idle jobs never emit an unhandled rejection.
     job.stopSignal.promise.catch(() => {});
@@ -415,9 +450,10 @@ export function createGeminiCompanionCore({
         job.lease = await awaitInterruptible(
           job,
           () => workspaceLeases.acquire(job.request),
-          (lateLease) => releaseLease(lateLease),
+          { onLateValue: (lateLease) => releaseLease(lateLease) },
         );
       }
+      const runtimeSetupLease = job.lease;
       const runtime = await awaitInterruptible(
         job,
         () => createRuntime({
@@ -426,7 +462,16 @@ export function createGeminiCompanionCore({
           compatibility,
           signal: job.abortController.signal,
         }),
-        (lateRuntime) => cleanupRuntime(lateRuntime, true),
+        {
+          onAbandon: () => {
+            if (runtimeSetupLease) job.leaseReleaseDeferred = true;
+          },
+          onLateValue: async (lateRuntime) => {
+            await cleanupRuntime(lateRuntime, true);
+            if (runtimeSetupLease) await releaseLease(runtimeSetupLease);
+          },
+          onLateError: () => (runtimeSetupLease ? releaseLease(runtimeSetupLease) : undefined),
+        },
       );
       if ((typeof runtime !== "object" || runtime === null) || typeof runtime.run !== "function") {
         throw new CompanionJobError("protocol_error", "invalid_runtime");

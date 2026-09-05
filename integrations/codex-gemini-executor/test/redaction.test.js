@@ -122,6 +122,20 @@ test("redacts credential header and assignment values in free text", () => {
   assert.match(output, /Cookie: \[REDACTED\]/u);
 });
 
+test("redacts quoted and unquoted credential headers embedded in curl commands", () => {
+  const redactor = createCompanionRedactor();
+  const commands = [
+    "curl -H Authorization: Basic dXNlcjpwYXNz -H Cookie: sid=private-cookie http://localhost",
+    "curl -H \"Authorization: Basic dXNlcjpwYXNz\" -H \"Cookie: sid=private-cookie\" http://localhost",
+  ];
+  for (const command of commands) {
+    const output = redactor.sanitizeForDisplay(command);
+    assert.equal(output.includes("dXNlcjpwYXNz"), false);
+    assert.equal(output.includes("private-cookie"), false);
+    assert.match(output, /Authorization: \[REDACTED\]/u);
+  }
+});
+
 test("bounds known-secret catalogs and approval display output", () => {
   assert.throws(
     () => createCompanionRedactor({ knownSecrets: Array.from({ length: 65 }, (_, index) => `secret-${index}`) }),
