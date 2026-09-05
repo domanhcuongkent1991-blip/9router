@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { APP_SERVER_REQUIRED_METHODS } from "../src/app-server/compatibility.js";
 import { createAppServerCompatibilityAdapter } from "../src/app-server/adapter.js";
+import { createStableHandshakeDriver } from "../src/app-server/handshake.js";
+import { qualifyStableSchemaBundle } from "../src/app-server/schema-qualification.js";
 
 const methods = () => Object.fromEntries(APP_SERVER_REQUIRED_METHODS.map((name) => [name, true]));
 const options = (overrides = {}) => ({
@@ -53,4 +55,75 @@ test("does not let warning delivery block compatible execution", async () => {
   const result = await adapter.check();
   assert.equal(result.status, "compatible");
   assert.deepEqual(result.warnings.map((warning) => warning.code), ["codex_version_changed", "codex_executable_changed"]);
+});
+
+function generatedSchema({ includeInterrupt = true } = {}) {
+  const refs = {
+    initialize: "#/definitions/InitializeParams",
+    "model/list": "#/definitions/ModelListParams",
+    "thread/start": "#/definitions/ThreadStartParams",
+    "thread/resume": "#/definitions/ThreadResumeParams",
+    "turn/start": "#/definitions/TurnStartParams",
+    ...(includeInterrupt ? { "turn/interrupt": "#/definitions/TurnInterruptParams" } : {}),
+  };
+  return {
+    definitions: {
+      ClientRequest: {
+        oneOf: Object.entries(refs).map(([method, ref]) => ({
+          required: ["id", "method", "params"],
+          properties: {
+            method: { enum: [method] },
+            params: { $ref: ref },
+          },
+        })),
+      },
+    },
+  };
+}
+
+function composedAdapter({ includeInterrupt = true } = {}) {
+  const warnings = [];
+  const client = {
+    async request(method) {
+      if (method === "initialize") {
+        return {
+          userAgent: "new-version",
+          platformFamily: "windows",
+          platformOs: "windows",
+          codexHome: "C:\\IsolatedCodexHome",
+        };
+      }
+      if (method === "model/list") return { data: [] };
+      throw new Error("unexpected probe");
+    },
+    notify() {},
+  };
+  const driver = createStableHandshakeDriver({
+    client,
+    schemaQualification: qualifyStableSchemaBundle(generatedSchema({ includeInterrupt })),
+  });
+  return {
+    warnings,
+    adapter: createAppServerCompatibilityAdapter({
+      baseline: { version: "1.1.0", executableSha256: "b".repeat(64) },
+      clientInfo: { name: "nine_router_gemini", title: "9Router Gemini", version: "0.1.0" },
+      observeExecutable: async () => ({ version: "1.2.0", executableSha256: "a".repeat(64) }),
+      initialize: driver.initialize,
+      probeRequiredContract: driver.probeRequiredContract,
+      onWarning: (warning) => warnings.push(warning.code),
+    }),
+  };
+}
+
+test("composition gates on capabilities while version and hash changes only warn", async () => {
+  const compatible = composedAdapter();
+  assert.equal((await compatible.adapter.check()).status, "compatible");
+  assert.deepEqual(compatible.warnings, ["codex_version_changed", "codex_executable_changed"]);
+
+  const incompatible = composedAdapter({ includeInterrupt: false });
+  await assert.rejects(incompatible.adapter.check(), (error) => {
+    assert.equal(error.code, "app_server_incompatible");
+    assert.deepEqual(error.details.missingCapabilities, ["turn/interrupt"]);
+    return true;
+  });
 });
