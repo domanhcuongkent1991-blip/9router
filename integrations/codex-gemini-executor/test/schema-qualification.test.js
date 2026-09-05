@@ -40,7 +40,7 @@ function stableDefinitions() {
     InitializeParams: objectDefinition({
       clientInfo: { type: "object" },
       capabilities: { type: "object" },
-    }, ["clientInfo", "capabilities"]),
+    }, ["clientInfo"]),
     ModelListParams: objectDefinition({
       limit: { type: "integer" },
       includeHidden: { type: "boolean" },
@@ -140,11 +140,24 @@ function approvalSchema(requests = expectedApprovalRefs) {
   };
 }
 
+function setApprovalIdRef(bundle, ref) {
+  for (const variant of bundle.definitions.ServerRequest.oneOf) {
+    variant.properties.id.$ref = ref;
+  }
+  return bundle;
+}
+
 test("qualifies the exact stable request subset", () => {
   const result = qualifyStableSchemaBundle(schema());
   assert.equal(result.schemaSubsetCompatible, true);
   assert.deepEqual(Object.keys(result.methods), APP_SERVER_REQUIRED_METHODS);
   assert.ok(APP_SERVER_REQUIRED_METHODS.every((method) => result.methods[method] === true));
+});
+
+test("allows initialize capabilities to remain optional", () => {
+  const bundle = schema();
+  bundle.definitions.InitializeParams.required = ["clientInfo"];
+  assert.equal(qualifyStableSchemaBundle(bundle).schemaSubsetCompatible, true);
 });
 
 test("allows additive unrelated request methods", () => {
@@ -205,6 +218,37 @@ test("rejects malformed request and notification envelopes", () => {
     $ref: "#/definitions/RequestId",
   };
   assert.equal(qualifyStableSchemaBundle(notificationDeclaringOptionalId).schemaSubsetCompatible, false);
+});
+
+test("resolves plain, nested, and escaped local request id references", () => {
+  assert.equal(qualifyApprovalSchemaBundle(approvalSchema()).schemaSubsetCompatible, true);
+
+  const nested = setApprovalIdRef(approvalSchema(), "#/definitions/v2/RequestId");
+  nested.definitions.v2 = { RequestId: nested.definitions.RequestId };
+  delete nested.definitions.RequestId;
+  assert.equal(qualifyApprovalSchemaBundle(nested).schemaSubsetCompatible, true);
+
+  const escaped = setApprovalIdRef(approvalSchema(), "#/definitions/v2~1types/Request~0Id");
+  escaped.definitions["v2/types"] = { "Request~Id": escaped.definitions.RequestId };
+  delete escaped.definitions.RequestId;
+  assert.equal(qualifyApprovalSchemaBundle(escaped).schemaSubsetCompatible, true);
+});
+
+test("rejects missing, malformed, and external request id references", () => {
+  const missing = setApprovalIdRef(approvalSchema(), "#/definitions/v2/RequestId");
+  delete missing.definitions.RequestId;
+  assert.equal(qualifyApprovalSchemaBundle(missing).schemaSubsetCompatible, false);
+
+  const malformed = setApprovalIdRef(approvalSchema(), "#/definitions/v2/RequestId");
+  malformed.definitions.v2 = { RequestId: { type: "object", properties: {} } };
+  delete malformed.definitions.RequestId;
+  assert.equal(qualifyApprovalSchemaBundle(malformed).schemaSubsetCompatible, false);
+
+  const external = setApprovalIdRef(approvalSchema(), "https://example.invalid/RequestId");
+  assert.equal(qualifyApprovalSchemaBundle(external).schemaSubsetCompatible, false);
+
+  const malformedPointer = setApprovalIdRef(approvalSchema(), "#/definitions/v2/Request~2Id");
+  assert.equal(qualifyApprovalSchemaBundle(malformedPointer).schemaSubsetCompatible, false);
 });
 
 test("rejects incompatible primitive and container kinds", () => {

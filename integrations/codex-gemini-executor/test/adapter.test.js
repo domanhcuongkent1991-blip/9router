@@ -81,7 +81,7 @@ function generatedSchema({ includeInterrupt = true, includeCompleted = true } = 
   return {
     definitions: {
       RequestId: { oneOf: [{ type: "integer" }, { type: "string" }] },
-      InitializeParams: objectDefinition({ clientInfo: { type: "object" }, capabilities: { type: "object" } }, ["clientInfo", "capabilities"]),
+      InitializeParams: objectDefinition({ clientInfo: { type: "object" }, capabilities: { type: "object" } }, ["clientInfo"]),
       ModelListParams: objectDefinition({ limit: { type: "integer" }, includeHidden: { type: "boolean" } }),
       ThreadStartParams: objectDefinition({
         cwd: { type: "string" }, model: { type: "string" }, modelProvider: { type: "string" },
@@ -132,7 +132,7 @@ function generatedApprovalSchema({ includeFileChange = true } = {}) {
   });
   return {
     definitions: {
-      RequestId: { oneOf: [{ type: "integer" }, { type: "string" }] },
+      v2: { RequestId: { oneOf: [{ type: "integer" }, { type: "string" }] } },
       CommandExecutionRequestApprovalParams: approvalDefinition(),
       FileChangeRequestApprovalParams: approvalDefinition(),
       ServerRequest: {
@@ -141,7 +141,7 @@ function generatedApprovalSchema({ includeFileChange = true } = {}) {
           ...(includeFileChange ? [["item/fileChange/requestApproval", "#/definitions/FileChangeRequestApprovalParams"]] : []),
         ].map(([method, ref]) => ({
           required: ["id", "method", "params"],
-          properties: { id: { $ref: "#/definitions/RequestId" }, method: { type: "string", enum: [method] }, params: { $ref: ref } },
+          properties: { id: { $ref: "#/definitions/v2/RequestId" }, method: { type: "string", enum: [method] }, params: { $ref: ref } },
         })),
       },
     },

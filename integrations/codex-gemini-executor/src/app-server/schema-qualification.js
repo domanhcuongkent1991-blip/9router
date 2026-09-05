@@ -20,13 +20,11 @@ const EXPECTED_APPROVAL_REFS = Object.freeze({
   "item/fileChange/requestApproval": "#/definitions/FileChangeRequestApprovalParams",
 });
 
-const REQUEST_ID_REF = "#/definitions/RequestId";
-
 const PARAMETER_CONTRACTS = Object.freeze({
   "#/definitions/InitializeParams": {
     direction: "outgoing",
     fields: { clientInfo: "object", capabilities: "object" },
-    required: ["clientInfo", "capabilities"],
+    required: ["clientInfo"],
   },
   "#/definitions/ModelListParams": {
     direction: "outgoing",
@@ -114,16 +112,28 @@ function variantMethod(variant) {
     : undefined;
 }
 
-function definitionName(ref) {
+function definitionPath(ref) {
   const prefix = "#/definitions/";
   if (typeof ref !== "string" || !ref.startsWith(prefix)) return undefined;
-  const name = ref.slice(prefix.length);
-  return name.length > 0 && !name.includes("/") ? name : undefined;
+  const pointer = ref.slice(prefix.length);
+  if (pointer.length === 0) return undefined;
+  const path = [];
+  for (const token of pointer.split("/")) {
+    if (/~(?:[^01]|$)/u.test(token)) return undefined;
+    path.push(token.replaceAll("~1", "/").replaceAll("~0", "~"));
+  }
+  return path;
 }
 
 function resolveDefinition(definitions, ref) {
-  const name = definitionName(ref);
-  return name === undefined ? undefined : definitions[name];
+  const path = definitionPath(ref);
+  if (path === undefined || !isObject(definitions)) return undefined;
+  let value = definitions;
+  for (const segment of path) {
+    if (!isObject(value) || !Object.hasOwn(value, segment)) return undefined;
+    value = value[segment];
+  }
+  return value;
 }
 
 function schemaKinds(schema, definitions, seen = new Set()) {
@@ -158,8 +168,8 @@ function validRequired(required) {
       && new Set(required).size === required.length);
 }
 
-function validRequestId(definitions) {
-  const requestId = resolveDefinition(definitions, REQUEST_ID_REF);
+function validRequestId(definitions, ref) {
+  const requestId = resolveDefinition(definitions, ref);
   if (!isObject(requestId)) return false;
   const kinds = schemaKinds(requestId, definitions);
   return kinds.size > 0
@@ -199,7 +209,8 @@ function isCompatibleVariant(variant, method, expectedRef, requiresId, definitio
   if (!requiredFields.every((name) => variant.required.includes(name))) return false;
   if (variant.properties.method?.type !== "string") return false;
   if (requiresId) {
-    if (variant.properties.id?.$ref !== REQUEST_ID_REF || !validRequestId(definitions)) return false;
+    const idRef = variant.properties.id?.$ref;
+    if (!validRequestId(definitions, idRef)) return false;
   } else if (Object.hasOwn(variant.properties, "id") || variant.required.includes("id")) {
     return false;
   }
