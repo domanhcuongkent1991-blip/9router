@@ -123,29 +123,34 @@ export function createAppServerApprovalAdapter({
     throw new AppServerApprovalError(reason, stage, cause);
   }
 
-  async function sanitize(value, maxBytes) {
-    const sanitized = await sanitizeForDisplay(value);
+  function createDeadline() {
+    let expired = false;
+    let timer;
+    const timeout = new Promise((resolve, reject) => {
+      timer = setTimeout(() => {
+        expired = true;
+        reject(TIMED_OUT);
+      }, timeoutMs);
+      timer.unref?.();
+    });
+    return {
+      run(callback) {
+        if (expired) return Promise.reject(TIMED_OUT);
+        return Promise.race([Promise.resolve().then(callback), timeout]);
+      },
+      clear() {
+        clearTimeout(timer);
+      },
+    };
+  }
+
+  async function sanitize(value, maxBytes, deadline) {
+    const sanitized = await deadline.run(() => sanitizeForDisplay(value));
     if (sanitized === null) return null;
     if (typeof sanitized !== "string" || Buffer.byteLength(sanitized, "utf8") > maxBytes) {
       throw new TypeError("invalid sanitizer output");
     }
     return sanitized;
-  }
-
-  async function promptForDecision(prompt) {
-    let timer;
-    const timeout = new Promise((resolve, reject) => {
-      timer = setTimeout(() => reject(TIMED_OUT), timeoutMs);
-      timer.unref?.();
-    });
-    try {
-      return await Promise.race([
-        Promise.resolve().then(() => requestDecision(prompt)),
-        timeout,
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
   }
 
   async function handle(message, activeTurn) {
@@ -158,13 +163,14 @@ export function createAppServerApprovalAdapter({
     }
 
     activeRequestId = normalized.id;
+    const deadline = createDeadline();
     try {
       let prompt;
       try {
         if (normalized.type === "command") {
-          const command = await sanitize(normalized.command, MAX_COMMAND_BYTES);
-          const cwd = await sanitize(normalized.cwd, MAX_CWD_BYTES);
-          const reason = await sanitize(normalized.reason, MAX_REASON_BYTES);
+          const command = await sanitize(normalized.command, MAX_COMMAND_BYTES, deadline);
+          const cwd = await sanitize(normalized.cwd, MAX_CWD_BYTES, deadline);
+          const reason = await sanitize(normalized.reason, MAX_REASON_BYTES, deadline);
           prompt = {
             type: "command",
             jobId: activeTurn.jobId,
@@ -177,7 +183,7 @@ export function createAppServerApprovalAdapter({
             decisions: [...DECISIONS],
           };
         } else {
-          const reason = await sanitize(normalized.reason, MAX_REASON_BYTES);
+          const reason = await sanitize(normalized.reason, MAX_REASON_BYTES, deadline);
           prompt = {
             type: "file_change",
             jobId: activeTurn.jobId,
@@ -189,12 +195,15 @@ export function createAppServerApprovalAdapter({
           };
         }
       } catch (error) {
+        if (error === TIMED_OUT) {
+          return await cancelAndFail(normalized.id, "approval_timeout", "sanitize");
+        }
         return await cancelAndFail(normalized.id, "sanitization_failed", "sanitize", error);
       }
 
       let decision;
       try {
-        decision = await promptForDecision(prompt);
+        decision = await deadline.run(() => requestDecision(prompt));
       } catch (error) {
         if (error === TIMED_OUT) {
           return await cancelAndFail(normalized.id, "approval_timeout", "decision");
@@ -212,6 +221,7 @@ export function createAppServerApprovalAdapter({
       }
       return { decision };
     } finally {
+      deadline.clear();
       activeRequestId = undefined;
     }
   }

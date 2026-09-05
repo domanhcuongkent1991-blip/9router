@@ -193,6 +193,31 @@ test("sanitizer, decision-provider, and timeout failures attempt one cancel then
   }
 });
 
+test("uses one deadline across async sanitizers and ignores their late completion", async () => {
+  let resolveSanitizer;
+  const { adapter, responses } = adapterFixture({
+    sanitizeForDisplay: () => new Promise((resolve) => { resolveSanitizer = resolve; }),
+    timeoutMs: 5,
+  });
+  let watchdog;
+  const outcome = await Promise.race([
+    adapter.handle(commandMessage(), activeTurn).then(
+      (value) => ({ status: "resolved", value }),
+      (error) => ({ status: "rejected", error }),
+    ),
+    new Promise((resolve) => {
+      watchdog = setTimeout(() => resolve({ status: "still_pending" }), 100);
+    }),
+  ]);
+  clearTimeout(watchdog);
+  resolveSanitizer("late sanitized value");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(outcome.status, "rejected");
+  assertSanitizedApprovalError(outcome.error, "approval_timeout", "sanitize");
+  assert.deepEqual(responses, [{ id: "request_1", result: { decision: "cancel" } }]);
+});
+
 test("reports a sanitized cancel response failure instead of the original failure", async () => {
   const { adapter } = adapterFixture({
     requestDecision: async () => { throw new Error("SECRET provider"); },

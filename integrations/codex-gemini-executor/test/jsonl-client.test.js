@@ -137,6 +137,40 @@ test("response serialization and size failures close the client and reject pendi
   }
 });
 
+test("rejects response results that JSON serialization removes from the frame", async () => {
+  const omittedResults = [
+    undefined,
+    () => {},
+    Symbol("omitted"),
+    { toJSON() { return undefined; } },
+  ];
+  for (const result of omittedResults) {
+    const { readable, writable, client } = fixture({ onServerRequest: () => {} });
+    const writes = [];
+    writable.on("data", (chunk) => writes.push(chunk));
+    const pending = client.request("model/list", {}).catch((error) => error);
+    readable.write(`${JSON.stringify({ method: "approval", id: 1, params: {} })}\n`);
+    await new Promise((resolve) => setImmediate(resolve));
+    const writesBeforeResponse = writes.length;
+
+    let responseError;
+    try {
+      client.respond(1, result);
+    } catch (error) {
+      responseError = error;
+    }
+    const closedByResponse = client.isClosed();
+    if (!closedByResponse) client.close();
+    const pendingError = await pending;
+
+    assert.ok(responseError instanceof AppServerProtocolError);
+    assert.equal(closedByResponse, true);
+    assert.equal(writes.length, writesBeforeResponse);
+    assert.ok(pendingError instanceof AppServerProtocolError);
+    assert.equal(JSON.stringify(responseError).includes("omitted"), false);
+  }
+});
+
 test("close clears server requests and prevents later responses from writing", async () => {
   const { readable, writable, client } = fixture({ onServerRequest: () => {} });
   const writes = [];

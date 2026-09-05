@@ -195,12 +195,24 @@ export function createAppServerJsonlClient({
     fail("write_failure", error);
   }
 
-  function encode(message) {
+  function encode(message, requiredFields = []) {
     let line;
     try {
       line = `${JSON.stringify(message)}\n`;
     } catch (error) {
       throw protocolError("serialization_failure", error);
+    }
+    if (requiredFields.length > 0) {
+      let serialized;
+      try {
+        serialized = JSON.parse(line);
+      } catch (error) {
+        throw protocolError("serialization_failure", error);
+      }
+      if (!isObject(serialized)
+        || requiredFields.some((field) => !Object.hasOwn(serialized, field))) {
+        throw new AppServerProtocolError("serialization_failure");
+      }
     }
     const bytes = Buffer.from(line, "utf8");
     if (bytes.length - 1 > maxLineBytes) {
@@ -209,9 +221,9 @@ export function createAppServerJsonlClient({
     return bytes;
   }
 
-  function write(message) {
+  function write(message, requiredFields) {
     if (closed) throw new AppServerProtocolError("client_closed");
-    const bytes = encode(message);
+    const bytes = encode(message, requiredFields);
     try {
       writable.write(bytes);
     } catch (error) {
@@ -256,7 +268,7 @@ export function createAppServerJsonlClient({
       throw error;
     }
     try {
-      write({ id, result });
+      write({ id, result }, ["result"]);
     } catch (error) {
       const normalized = protocolError("response_write_failure", error);
       finish(normalized);
