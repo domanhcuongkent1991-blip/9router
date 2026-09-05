@@ -136,6 +136,8 @@ export function createGeminiCompanionCore({
   compatibilityAdapter,
   workspaceLeases,
   createRuntime,
+  prepareRuntime,
+  workspaceManager,
   redactor,
   persistStatus = async () => {},
   generateJobId = () => `job_${crypto.randomUUID()}`,
@@ -144,11 +146,14 @@ export function createGeminiCompanionCore({
   maxAccumulatedOutputBytes = 32 * 1024,
   cleanupTimeoutMs = 5_000,
   persistenceTimeoutMs = 5_000,
+  initialStatuses = [],
 }) {
   requireDependency(typeof validateRequest === "function", "validate_request_required");
-  requireDependency(typeof compatibilityAdapter?.check === "function", "compatibility_adapter_required");
+  const usesPreparedRuntime = typeof prepareRuntime === "function";
+  requireDependency(usesPreparedRuntime || typeof compatibilityAdapter?.check === "function", "compatibility_adapter_required");
   requireDependency(typeof workspaceLeases?.acquire === "function", "workspace_leases_required");
-  requireDependency(typeof createRuntime === "function", "runtime_factory_required");
+  requireDependency(usesPreparedRuntime || typeof createRuntime === "function", "runtime_factory_required");
+  requireDependency(workspaceManager === undefined || typeof workspaceManager?.prepare === "function", "workspace_manager_invalid");
   requireDependency(typeof redactor?.redactJson === "function"
     && typeof redactor?.redactError === "function"
     && typeof redactor?.sanitizeForDisplay === "function", "redactor_required");
@@ -159,10 +164,21 @@ export function createGeminiCompanionCore({
   requireDependency(Number.isInteger(maxAccumulatedOutputBytes) && maxAccumulatedOutputBytes > 0, "invalid_output_limit");
   requireDependency(Number.isInteger(cleanupTimeoutMs) && cleanupTimeoutMs > 0, "invalid_cleanup_timeout");
   requireDependency(Number.isInteger(persistenceTimeoutMs) && persistenceTimeoutMs > 0, "invalid_persistence_timeout");
+  requireDependency(Array.isArray(initialStatuses), "invalid_initial_statuses");
 
   const jobs = new Map();
   const runtimeCleanups = new WeakMap();
   const leaseReleases = new WeakMap();
+
+  for (const snapshot of initialStatuses) {
+    const sanitized = redactor.redactJson(snapshot);
+    if (typeof sanitized?.jobId !== "string" || !TERMINAL_STATUSES.has(sanitized.status) || jobs.has(sanitized.jobId)) {
+      throw new CompanionJobError("invalid_core_configuration", "invalid_initial_status");
+    }
+    const done = deferred();
+    done.resolve(clone(sanitized));
+    jobs.set(sanitized.jobId, { snapshot: sanitized, done });
+  }
 
   function getJob(jobId) {
     const job = jobs.get(jobId);
@@ -213,6 +229,8 @@ export function createGeminiCompanionCore({
         category: "protocol_error",
         cause: { name: "PersistenceFailure", message: "Status persistence failed" },
       },
+      ...(typeof job.snapshot.workspace === "string" ? { workspace: job.snapshot.workspace } : {}),
+      ...(Object.hasOwn(job.snapshot, "worktreePath") ? { worktreePath: job.snapshot.worktreePath } : {}),
       output: job.output,
     };
     try {
@@ -222,6 +240,8 @@ export function createGeminiCompanionCore({
         jobId: job.snapshot.jobId,
         status: "failed",
         error: { category: "protocol_error" },
+        ...(typeof job.snapshot.workspace === "string" ? { workspace: job.snapshot.workspace } : {}),
+        ...(Object.hasOwn(job.snapshot, "worktreePath") ? { worktreePath: job.snapshot.worktreePath } : {}),
         output: "",
       };
     }
@@ -413,7 +433,7 @@ export function createGeminiCompanionCore({
     job.output = "";
   }
 
-  async function runGeminiTask(rawRequest) {
+  async function runGeminiTask(rawRequest, executionHooks = {}) {
     const generatedJobId = generateJobId();
     if (typeof generatedJobId !== "string"
       || generatedJobId.trim().length === 0
@@ -447,9 +467,33 @@ export function createGeminiCompanionCore({
     let terminalPatch;
     try {
       await publish(job, { status: "starting" });
+      if (typeof executionHooks?.onStarted === "function") {
+        try { await executionHooks.onStarted(jobId); } catch { /* progress reporting is non-gating */ }
+      }
       job.request = await awaitInterruptible(job, () => validateRequest(rawRequest));
       armHardTimer(job);
-      const compatibility = await awaitInterruptible(job, () => compatibilityAdapter.check());
+      let compatibility;
+      if (usesPreparedRuntime) {
+        const prepared = await awaitInterruptible(
+          job,
+          () => prepareRuntime({
+            jobId,
+            request: job.request,
+            signal: job.abortController.signal,
+          }),
+          { onLateValue: (lateRuntime) => cleanupRuntime(lateRuntime, true) },
+        );
+        if ((typeof prepared !== "object" || prepared === null) || typeof prepared.run !== "function") {
+          throw new CompanionJobError("protocol_error", "invalid_prepared_runtime");
+        }
+        job.runtime = prepared;
+        compatibility = prepared.compatibility;
+        if (compatibility?.status !== "compatible") {
+          throw new CompanionJobError("app_server_incompatible", "prepared_runtime_not_compatible");
+        }
+      } else {
+        compatibility = await awaitInterruptible(job, () => compatibilityAdapter.check());
+      }
       if (job.request.access === "workspace-write") {
         job.lease = await awaitInterruptible(
           job,
@@ -457,26 +501,62 @@ export function createGeminiCompanionCore({
           { onLateValue: (lateLease) => releaseLease(lateLease) },
         );
       }
-      const runtimeSetupLease = job.lease;
-      const runtime = await awaitInterruptible(
-        job,
-        () => createRuntime({
-          jobId,
-          request: job.request,
-          compatibility,
-          signal: job.abortController.signal,
-        }),
-        {
-          onAbandon: () => {
-            if (runtimeSetupLease) job.leaseReleaseDeferred = true;
+      let workspace;
+      if (workspaceManager) {
+        const workspaceSetupLease = job.lease;
+        const workspaceSetupRuntime = job.runtime;
+        const finishAbandonedWorkspaceSetup = async () => {
+          const runtimeFailed = workspaceSetupRuntime
+            ? await cleanupRuntime(workspaceSetupRuntime, true)
+            : false;
+          if (workspaceSetupLease && !runtimeFailed) await releaseLease(workspaceSetupLease);
+        };
+        workspace = await awaitInterruptible(
+          job,
+          () => workspaceManager.prepare(job.request, jobId),
+          {
+            onAbandon: () => { if (workspaceSetupLease) job.leaseReleaseDeferred = true; },
+            onLateValue: finishAbandonedWorkspaceSetup,
+            onLateError: finishAbandonedWorkspaceSetup,
           },
-          onLateValue: async (lateRuntime) => {
-            const runtimeFailed = await cleanupRuntime(lateRuntime, true);
-            if (runtimeSetupLease && !runtimeFailed) await releaseLease(runtimeSetupLease);
+        );
+      } else {
+        workspace = { executionWorkspace: job.request.workspace, worktreePath: null, head: null };
+      }
+      if (typeof workspace?.executionWorkspace !== "string") {
+        throw new CompanionJobError("protocol_error", "invalid_execution_workspace");
+      }
+      if (workspace.worktreePath) {
+        await publish(job, {
+          status: "starting",
+          workspace: job.request.workspace,
+          worktreePath: workspace.worktreePath,
+          access: job.request.access,
+        });
+      }
+      let runtime = job.runtime;
+      if (!usesPreparedRuntime) {
+        const runtimeSetupLease = job.lease;
+        runtime = await awaitInterruptible(
+          job,
+          () => createRuntime({
+            jobId,
+            request: job.request,
+            compatibility,
+            signal: job.abortController.signal,
+          }),
+          {
+            onAbandon: () => {
+              if (runtimeSetupLease) job.leaseReleaseDeferred = true;
+            },
+            onLateValue: async (lateRuntime) => {
+              const runtimeFailed = await cleanupRuntime(lateRuntime, true);
+              if (runtimeSetupLease && !runtimeFailed) await releaseLease(runtimeSetupLease);
+            },
+            onLateError: () => (runtimeSetupLease ? releaseLease(runtimeSetupLease) : undefined),
           },
-          onLateError: () => (runtimeSetupLease ? releaseLease(runtimeSetupLease) : undefined),
-        },
-      );
+        );
+      }
       if ((typeof runtime !== "object" || runtime === null) || typeof runtime.run !== "function") {
         throw new CompanionJobError("protocol_error", "invalid_runtime");
       }
@@ -484,23 +564,34 @@ export function createGeminiCompanionCore({
       await publish(job, {
         status: "running",
         workspace: job.request.workspace,
+        worktreePath: workspace.worktreePath ?? null,
         access: job.request.access,
         effort: job.request.effort,
         compatibilityWarnings: compatibility?.warnings ?? [],
       });
       armIdleTimer(job);
       const rawResult = await awaitInterruptible(job, () => runtime.run({
+        jobId,
         request: job.request,
+        executionWorkspace: workspace.executionWorkspace,
+        worktreePath: workspace.worktreePath ?? null,
+        head: workspace.head ?? null,
         signal: job.abortController.signal,
         onEvent: (event) => onRuntimeEvent(job, event),
+        requestDecision: executionHooks?.requestDecision,
       }));
       const result = normalizeRuntimeResult(redactor, rawResult);
+      if (workspace.worktreePath && typeof workspaceManager?.collectChanges === "function") {
+        result.filesChanged = await awaitInterruptible(job, () => workspaceManager.collectChanges(workspace));
+      }
       terminalPatch = {
         status: "completed",
         ...(Object.hasOwn(result, "sessionId") ? { sessionId: result.sessionId } : {}),
         finalAnswer: result.finalAnswer,
         filesChanged: result.filesChanged,
         tests: result.tests,
+        workspace: job.request.workspace,
+        worktreePath: workspace.worktreePath ?? null,
         output: job.output,
       };
     } catch (error) {

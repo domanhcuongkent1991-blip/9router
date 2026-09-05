@@ -738,3 +738,62 @@ test("does not acquire workspace leases for read-only jobs", async () => {
   assert.equal((await core.runGeminiTask(baseRequest)).status, "completed");
   assert.equal(leaseCalls, 0);
 });
+
+test("qualifies one prepared runtime before writer mutation and reuses it for the turn", async () => {
+  const calls = [];
+  const prepared = {
+    compatibility: { status: "compatible", warnings: [] },
+    run: async ({ executionWorkspace }) => {
+      calls.push(["run", executionWorkspace]);
+      return { finalAnswer: "done", filesChanged: [], tests: [] };
+    },
+    dispose: async () => calls.push("dispose"),
+  };
+  const core = createGeminiCompanionCore({
+    validateRequest: async () => {
+      calls.push("validate");
+      return { task: "x", workspace: "D:\\Repo", effort: "medium", access: "workspace-write", timeoutMinutes: 30 };
+    },
+    prepareRuntime: async () => { calls.push("prepare-runtime"); return prepared; },
+    workspaceLeases: { acquire: async () => { calls.push("lease"); return { release: async () => calls.push("release") }; } },
+    workspaceManager: { prepare: async () => { calls.push("worktree"); return { executionWorkspace: "C:\\jobs\\job_1", worktreePath: "C:\\jobs\\job_1", head: "a".repeat(40) }; } },
+    redactor: createCompanionRedactor(),
+    generateJobId: () => "job_1",
+  });
+  const result = await core.runGeminiTask(baseRequest);
+  assert.equal(result.status, "completed");
+  assert.equal(result.worktreePath, "C:\\jobs\\job_1");
+  assert.deepEqual(calls, ["validate", "prepare-runtime", "lease", "worktree", ["run", "C:\\jobs\\job_1"], "dispose", "release"]);
+});
+
+test("cleans a prepared runtime cancelled before a writer claim and never mutates workspace", async () => {
+  const stage = deferred();
+  const calls = [];
+  const core = createGeminiCompanionCore({
+    validateRequest: async () => ({ task: "x", workspace: "D:\\Repo", effort: "medium", access: "workspace-write", timeoutMinutes: 30 }),
+    prepareRuntime: () => stage.promise,
+    workspaceLeases: { acquire: async () => { calls.push("lease"); return { release: async () => {} }; } },
+    workspaceManager: { prepare: async () => { calls.push("worktree"); return {}; } },
+    redactor: createCompanionRedactor(), generateJobId: () => "job_prepared_cancel", cleanupTimeoutMs: 20,
+  });
+  const running = core.runGeminiTask(baseRequest);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await core.cancelGeminiTask("job_prepared_cancel")).status, "cancelled");
+  stage.resolve({
+    compatibility: { status: "compatible", warnings: [] }, run: async () => ({}),
+    cancel: async () => calls.push("cancel"), dispose: async () => calls.push("dispose"),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.deepEqual(calls, ["cancel", "dispose"]);
+  assert.equal((await running).status, "cancelled");
+});
+
+test("loads only terminal recovered statuses for on-demand inspection", () => {
+  const recovered = { jobId: "job_recovered", status: "failed", worktreePath: "C:\\jobs\\job_recovered", error: { category: "protocol_error" } };
+  const core = createGeminiCompanionCore({
+    validateRequest: async () => ({}), prepareRuntime: async () => ({ run: async () => ({}) }),
+    workspaceLeases: createWorkspaceLeaseManager(), redactor: createCompanionRedactor(),
+    initialStatuses: [recovered],
+  });
+  assert.deepEqual(core.getGeminiStatus("job_recovered"), recovered);
+});
