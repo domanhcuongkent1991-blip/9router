@@ -50,6 +50,105 @@ test("routes notifications and server requests separately", async () => {
   client.close();
 });
 
+test("records a server request before allowing one synchronous response", async () => {
+  const readable = new PassThrough();
+  const writable = new PassThrough();
+  let client;
+  client = createAppServerJsonlClient({
+    readable,
+    writable,
+    onServerRequest: (message) => client.respond(message.id, { decision: "accept" }),
+  });
+  assert.equal(typeof client.respond, "function");
+
+  const response = once(writable, "data");
+  readable.write(`${JSON.stringify({ method: "approval", id: "request_1", params: {} })}\n`);
+  const [chunk] = await response;
+  assert.equal(chunk.toString("utf8"), '{"id":"request_1","result":{"decision":"accept"}}\n');
+  assert.equal(Object.hasOwn(JSON.parse(chunk.toString("utf8")), "jsonrpc"), false);
+  assert.equal(client.isClosed(), false);
+  client.close();
+});
+
+test("accepts only safe integer or bounded non-empty string server request ids", async () => {
+  const invalidIds = [1.5, Number.MAX_SAFE_INTEGER + 1, "", "   ", "x".repeat(513), null, {}];
+  for (const id of invalidIds) {
+    const { readable, client, fatal } = fixture({ onServerRequest: () => {} });
+    readable.write(`${JSON.stringify({ method: "approval", id, params: {} })}\n`);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(client.isClosed(), true, `id should close the client: ${typeof id}`);
+    assert.deepEqual(fatal, ["app_server_protocol_error"]);
+  }
+
+  for (const id of [0, Number.MAX_SAFE_INTEGER, "request_1"]) {
+    const { readable, client } = fixture({ onServerRequest: () => {} });
+    readable.write(`${JSON.stringify({ method: "approval", id, params: {} })}\n`);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(client.isClosed(), false);
+    client.close();
+  }
+});
+
+test("fails closed for unknown, duplicate, already-responded, or excessive server requests", async () => {
+  const unknown = fixture({ onServerRequest: () => {} });
+  assert.throws(() => unknown.client.respond("missing", {}), AppServerProtocolError);
+  assert.equal(unknown.client.isClosed(), true);
+
+  const duplicate = fixture({ onServerRequest: () => {} });
+  const duplicateFrame = `${JSON.stringify({ method: "approval", id: 1, params: {} })}\n`;
+  duplicate.readable.write(duplicateFrame);
+  duplicate.readable.write(duplicateFrame);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(duplicate.client.isClosed(), true);
+
+  const responded = fixture({ onServerRequest: () => {} });
+  responded.readable.write(`${JSON.stringify({ method: "approval", id: 2, params: {} })}\n`);
+  await new Promise((resolve) => setImmediate(resolve));
+  responded.client.respond(2, { decision: "decline" });
+  assert.throws(() => responded.client.respond(2, { decision: "cancel" }), AppServerProtocolError);
+  assert.equal(responded.client.isClosed(), true);
+
+  const excessive = fixture({ onServerRequest: () => {} });
+  for (let id = 1; id <= 8; id += 1) {
+    excessive.readable.write(`${JSON.stringify({ method: "approval", id, params: {} })}\n`);
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(excessive.client.isClosed(), false);
+  excessive.readable.write(`${JSON.stringify({ method: "approval", id: 9, params: {} })}\n`);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(excessive.client.isClosed(), true);
+});
+
+test("response serialization and size failures close the client and reject pending requests", async () => {
+  for (const result of [{ value: 1n }, { value: "x".repeat(1024) }]) {
+    const { readable, client } = fixture({ onServerRequest: () => {} });
+    const pending = client.request("model/list", {});
+    readable.write(`${JSON.stringify({ method: "approval", id: "request_1", params: {} })}\n`);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.throws(
+      () => client.respond("request_1", result),
+      (error) => error instanceof AppServerProtocolError
+        && error.code === "app_server_protocol_error"
+        && !JSON.stringify(error).includes("x".repeat(20)),
+    );
+    await assert.rejects(pending, AppServerProtocolError);
+    assert.equal(client.isClosed(), true);
+  }
+});
+
+test("close clears server requests and prevents later responses from writing", async () => {
+  const { readable, writable, client } = fixture({ onServerRequest: () => {} });
+  const writes = [];
+  writable.on("data", (chunk) => writes.push(chunk));
+  readable.write(`${JSON.stringify({ method: "approval", id: 7, params: {} })}\n`);
+  await new Promise((resolve) => setImmediate(resolve));
+  client.close();
+  const countAfterClose = writes.length;
+  assert.throws(() => client.respond(7, { decision: "cancel" }), AppServerProtocolError);
+  assert.equal(writes.length, countAfterClose);
+});
+
 test("fails the connection on malformed or oversized input without exposing raw data", async () => {
   const { readable, client, fatal } = fixture({ maxLineBytes: 64 });
   const pending = client.request("model/list", {});

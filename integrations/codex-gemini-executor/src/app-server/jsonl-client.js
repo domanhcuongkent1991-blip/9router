@@ -7,6 +7,9 @@ export class AppServerProtocolError extends Error {
   }
 }
 
+const MAX_SERVER_REQUESTS = 8;
+const MAX_SERVER_REQUEST_ID_BYTES = 512;
+
 function protocolError(reason, error) {
   if (error instanceof AppServerProtocolError) return error;
   return new AppServerProtocolError(reason, {
@@ -24,6 +27,13 @@ function scalarRemoteCode(value) {
     : undefined;
 }
 
+function validServerRequestId(value) {
+  return Number.isSafeInteger(value)
+    || (typeof value === "string"
+      && value.trim().length > 0
+      && Buffer.byteLength(value, "utf8") <= MAX_SERVER_REQUEST_ID_BYTES);
+}
+
 export function createAppServerJsonlClient({
   readable,
   writable,
@@ -39,6 +49,7 @@ export function createAppServerJsonlClient({
   let input = Buffer.alloc(0);
   let nextRequestId = 1;
   const pending = new Map();
+  const serverRequests = new Set();
 
   function removeListeners() {
     readable.off("data", handleData);
@@ -58,6 +69,7 @@ export function createAppServerJsonlClient({
       entry.reject(error);
     }
     pending.clear();
+    serverRequests.clear();
     if (fatal) {
       try {
         Promise.resolve(onFatal(error)).catch(() => {});
@@ -92,7 +104,24 @@ export function createAppServerJsonlClient({
         fail("invalid_method");
         return;
       }
-      runCallback(hasId ? onServerRequest : onNotification, message);
+      if (hasId) {
+        if (!validServerRequestId(message.id)) {
+          fail("invalid_server_request_id");
+          return;
+        }
+        if (serverRequests.has(message.id)) {
+          fail("duplicate_server_request_id");
+          return;
+        }
+        if (serverRequests.size >= MAX_SERVER_REQUESTS) {
+          fail("too_many_server_requests");
+          return;
+        }
+        serverRequests.add(message.id);
+        runCallback(onServerRequest, message);
+        return;
+      }
+      runCallback(onNotification, message);
       return;
     }
 
@@ -219,6 +248,23 @@ export function createAppServerJsonlClient({
     write({ method, params });
   }
 
+  function respond(id, result) {
+    if (closed) throw new AppServerProtocolError("client_closed");
+    if (!validServerRequestId(id) || !serverRequests.has(id)) {
+      const error = new AppServerProtocolError("unknown_server_request_id");
+      finish(error);
+      throw error;
+    }
+    try {
+      write({ id, result });
+    } catch (error) {
+      const normalized = protocolError("response_write_failure", error);
+      finish(normalized);
+      throw normalized;
+    }
+    serverRequests.delete(id);
+  }
+
   function close() {
     finish(new AppServerProtocolError("client_closed"), false);
   }
@@ -229,5 +275,5 @@ export function createAppServerJsonlClient({
   readable.on("error", handleReadableError);
   writable.on("error", handleWritableError);
 
-  return Object.freeze({ request, notify, close, isClosed: () => closed });
+  return Object.freeze({ request, notify, respond, close, isClosed: () => closed });
 }
