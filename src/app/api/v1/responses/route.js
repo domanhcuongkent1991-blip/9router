@@ -1,4 +1,5 @@
 import { handleChat } from "@/sse/handlers/chat.js";
+import { createResponsesHandler } from "open-sse/compat/responses/handler.js";
 import { initTranslators } from "open-sse/translator/index.js";
 
 let initialized = false;
@@ -10,21 +11,21 @@ async function ensureInitialized() {
   }
 }
 
+const handleResponsesRequest = createResponsesHandler({
+  initialize: ensureInitialized,
+  dispatch: handleChat,
+});
+
 export async function OPTIONS() {
   return new Response(null, {
     headers: {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "*"
-    }
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+    },
   });
 }
 
-/**
- * POST /v1/responses - OpenAI Responses API format
- * Now handled by translator pattern (openai-responses format auto-detected)
- */
 export async function POST(request) {
-  await ensureInitialized();
-  return await handleChat(request);
+  return handleResponsesRequest(request);
 }
