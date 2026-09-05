@@ -87,17 +87,31 @@ test("reads bounded version output only after successful exit", async () => {
   child.stderr.write("ignored diagnostic");
   child.exitCode = 0;
   child.emit("exit", 0, null);
+  child.emit("close", 0, null);
   assert.equal(await promise, "codex-cli 0.153.4");
   assert.deepEqual(calls[0][0], "C:\\CodexDesktop\\codex.exe");
   assert.deepEqual(calls[0][1], ["--version"]);
   assert.equal(calls[0][2].shell, false);
 });
 
+test("waits for close so stdout emitted after exit is included", async () => {
+  const child = fakeChild();
+  const pending = readExecutableVersion({
+    executablePath: "C:\\CodexDesktop\\codex.exe",
+    spawnProcess: () => child,
+  });
+  child.exitCode = 0;
+  child.emit("exit", 0, null);
+  child.stdout.write("codex-cli delayed\n");
+  child.emit("close", 0, null);
+  assert.equal(await pending, "codex-cli delayed");
+});
+
 test("fails version reads on timeout, nonzero, empty, or oversized output", async () => {
   const cases = [
     { reason: "timeout", run: (child) => readExecutableVersion({ executablePath: "C:\\CodexDesktop\\codex.exe", spawnProcess: () => child, timeoutMs: 5 }) },
-    { reason: "nonzero_exit", run: (child) => { const result = readExecutableVersion({ executablePath: "C:\\CodexDesktop\\codex.exe", spawnProcess: () => child }); child.exitCode = 2; child.emit("exit", 2, null); return result; } },
-    { reason: "empty_output", run: (child) => { const result = readExecutableVersion({ executablePath: "C:\\CodexDesktop\\codex.exe", spawnProcess: () => child }); child.exitCode = 0; child.emit("exit", 0, null); return result; } },
+    { reason: "nonzero_exit", run: (child) => { const result = readExecutableVersion({ executablePath: "C:\\CodexDesktop\\codex.exe", spawnProcess: () => child }); child.exitCode = 2; child.emit("exit", 2, null); child.emit("close", 2, null); return result; } },
+    { reason: "empty_output", run: (child) => { const result = readExecutableVersion({ executablePath: "C:\\CodexDesktop\\codex.exe", spawnProcess: () => child }); child.exitCode = 0; child.emit("exit", 0, null); child.emit("close", 0, null); return result; } },
     { reason: "stdout_too_large", run: (child) => { const result = readExecutableVersion({ executablePath: "C:\\CodexDesktop\\codex.exe", spawnProcess: () => child }); child.stdout.write("secret".repeat(700)); return result; } },
   ];
   for (const entry of cases) {
@@ -121,6 +135,7 @@ test("generates only the stable schema bundle with exact arguments", async () =>
   });
   child.exitCode = 0;
   child.emit("exit", 0, null);
+  child.emit("close", 0, null);
   assert.deepEqual(await promise, { ok: true });
   assert.deepEqual(calls[0][1], ["app-server", "generate-json-schema", "--out", "C:\\SchemaOutput"]);
   assert.equal(calls[0][1].includes("--experimental"), false);
@@ -136,6 +151,7 @@ test("generates only the stable schema bundle with exact arguments", async () =>
     if (mode === "nonzero") {
       failedChild.exitCode = 1;
       failedChild.emit("exit", 1, null);
+      failedChild.emit("close", 1, null);
     }
     await assert.rejects(failed, { code: "app_server_process_error" });
   }

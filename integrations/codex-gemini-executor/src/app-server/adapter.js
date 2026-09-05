@@ -20,7 +20,7 @@ export function createAppServerCompatibilityAdapter({ baseline, clientInfo, obse
         const probe = await probeRequiredContract();
         const result = assessAppServerCompatibility({ observation, baseline, handshake, schemaSubsetCompatible: probe.schemaSubsetCompatible, methods: probe.methods });
         for (const warning of result.warnings) {
-          try { onWarning(warning); } catch { /* warnings are non-gating */ }
+          try { Promise.resolve(onWarning(warning)).catch(() => {}); } catch { /* warnings are non-gating */ }
         }
         return result;
       } catch (error) { throw normalizeFailure(error, stage, observation?.version); }

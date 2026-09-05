@@ -83,7 +83,7 @@ function runBoundedCommand({
     function cleanup() {
       clearTimeout(timer);
       child.off("error", onError);
-      child.off("exit", onExit);
+      child.off("close", onClose);
       child.stdout?.off("data", onStdout);
       child.stdout?.off("error", onStdoutError);
       child.stderr?.off("data", onStderr);
@@ -130,7 +130,7 @@ function runBoundedCommand({
       finish(new AppServerProcessError("stderr_error", stage, error));
     }
 
-    function onExit(code) {
+    function onClose(code) {
       if (code !== 0) {
         finish(new AppServerProcessError("nonzero_exit", stage));
         return;
@@ -139,7 +139,7 @@ function runBoundedCommand({
     }
 
     child.on("error", onError);
-    child.on("exit", onExit);
+    child.on("close", onClose);
     child.stdout?.on("data", onStdout);
     child.stdout?.on("error", onStdoutError);
     child.stderr?.on("data", onStderr);

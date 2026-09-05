@@ -57,6 +57,17 @@ test("does not let warning delivery block compatible execution", async () => {
   assert.deepEqual(result.warnings.map((warning) => warning.code), ["codex_version_changed", "codex_executable_changed"]);
 });
 
+test("absorbs rejected asynchronous warning delivery", async () => {
+  const adapter = createAppServerCompatibilityAdapter(options({
+    onWarning: async () => {
+      throw new Error("sensitive asynchronous warning failure");
+    },
+  }));
+  const result = await adapter.check();
+  assert.equal(result.status, "compatible");
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
 function generatedSchema({ includeInterrupt = true } = {}) {
   const refs = {
     initialize: "#/definitions/InitializeParams",
