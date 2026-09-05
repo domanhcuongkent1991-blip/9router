@@ -159,7 +159,29 @@ test("stops children idempotently and escalates at most once", async () => {
   setTimeout(() => {
     stubborn.exitCode = 0;
     stubborn.emit("exit", 0, "SIGKILL");
-  }, 12);
+  }, 7);
   await stopping;
   assert.deepEqual(stubborn.kills, ["default", "SIGKILL"]);
+});
+
+test("rejects concurrent stop waiters after a bounded post-force deadline", async () => {
+  const child = fakeChild({ killExits: false });
+  const first = stopChildProcess(child, { graceMs: 1 });
+  const second = stopChildProcess(child, { graceMs: 1 });
+  let safetyTimer;
+  const safetyDeadline = new Promise((resolve) => {
+    safetyTimer = setTimeout(() => resolve("still-pending"), 40);
+  });
+  const outcome = await Promise.race([Promise.allSettled([first, second]), safetyDeadline]);
+  clearTimeout(safetyTimer);
+
+  assert.notEqual(outcome, "still-pending");
+  assert.equal(outcome.length, 2);
+  for (const result of outcome) {
+    assert.equal(result.status, "rejected");
+    assert.ok(result.reason instanceof AppServerProcessError);
+    assert.deepEqual(result.reason.details, { reason: "termination_timeout", stage: "stop" });
+  }
+  assert.deepEqual(child.kills, ["default", "SIGKILL"]);
+  assert.equal(child.listenerCount("exit"), 0);
 });

@@ -60,7 +60,7 @@ export function createAppServerJsonlClient({
     pending.clear();
     if (fatal) {
       try {
-        onFatal(error);
+        Promise.resolve(onFatal(error)).catch(() => {});
       } catch {
         // Fatal reporting must never replace or expose the protocol failure.
       }

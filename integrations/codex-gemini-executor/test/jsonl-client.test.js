@@ -86,3 +86,17 @@ test("a request timeout closes the client and blocks later writes", async () => 
   await assert.rejects(client.request("model/list", { limit: 1 }), { code: "app_server_protocol_error" });
   assert.equal(writes.length, countAfterTimeout);
 });
+
+test("absorbs rejected asynchronous fatal-reporting callbacks", async () => {
+  const { readable, client } = fixture({
+    maxLineBytes: 64,
+    onFatal: async () => {
+      throw new Error("sensitive reporting failure");
+    },
+  });
+  const pending = client.request("model/list", {});
+  readable.write(`${"x".repeat(65)}\n`);
+  await assert.rejects(pending, { code: "app_server_protocol_error" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(client.isClosed(), true);
+});

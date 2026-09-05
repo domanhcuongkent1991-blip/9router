@@ -186,31 +186,56 @@ export async function stopChildProcess(child, { graceMs = 1_000 } = {}) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   if (stopOperations.has(child)) return stopOperations.get(child);
 
-  const operation = new Promise((resolve) => {
-    let timer;
+  const operation = new Promise((resolve, reject) => {
+    let graceTimer;
+    let forceTimer;
     let forced = false;
-    const finish = () => {
-      clearTimeout(timer);
-      child.off("exit", finish);
-      resolve();
+    let complete = false;
+    const finish = (error) => {
+      if (complete) return;
+      complete = true;
+      clearTimeout(graceTimer);
+      clearTimeout(forceTimer);
+      child.off("exit", onExit);
+      if (error) reject(error);
+      else resolve();
     };
-    child.on("exit", finish);
+    const onExit = () => finish();
+    child.on("exit", onExit);
     try {
       child.kill();
-    } catch {
-      finish();
+    } catch (error) {
+      finish(new AppServerProcessError("termination_failed", "stop", error));
       return;
     }
     if (child.exitCode !== null || child.signalCode !== null) {
       finish();
       return;
     }
-    timer = setTimeout(() => {
-      if (forced || child.exitCode !== null || child.signalCode !== null) return;
+    graceTimer = setTimeout(() => {
+      if (forced) return;
+      if (child.exitCode !== null || child.signalCode !== null) {
+        finish();
+        return;
+      }
       forced = true;
-      try { child.kill("SIGKILL"); } catch { finish(); }
+      try {
+        child.kill("SIGKILL");
+      } catch (error) {
+        finish(new AppServerProcessError("termination_failed", "stop", error));
+        return;
+      }
+      if (child.exitCode !== null || child.signalCode !== null) {
+        finish();
+        return;
+      }
+      forceTimer = setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null) finish();
+        else finish(new AppServerProcessError("termination_timeout", "stop"));
+      }, graceMs);
+      forceTimer.unref?.();
     }, graceMs);
-    timer.unref?.();
+    graceTimer.unref?.();
   });
   stopOperations.set(child, operation);
   return operation;
