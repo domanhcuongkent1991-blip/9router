@@ -4,6 +4,10 @@ const MAX_CALL_ID_LENGTH = 64;
 const MAX_INPUT_ITEMS = 2_048;
 const MAX_CONTENT_PARTS = 8_192;
 const MAX_DECLARED_TOOLS = 128;
+// Codex Desktop can send a few hundred MCP functions grouped in namespaces.
+// Keep the flat-list guard at 128, but leave bounded headroom for one request's
+// aggregate namespace catalog without accepting an unbounded tool payload.
+const MAX_TOTAL_DECLARED_TOOLS = 512;
 
 const SUPPORTED_INPUT_ITEM_TYPES = new Set([
   RESPONSES_ITEM.MESSAGE,
@@ -25,7 +29,8 @@ const SUPPORTED_CONTENT_TYPES = new Set([
   RESPONSES_ITEM.OUTPUT_TEXT,
   RESPONSES_ITEM.INPUT_IMAGE,
 ]);
-const SUPPORTED_TOOL_TYPES = new Set(["function", "custom"]);
+const SUPPORTED_TOOL_TYPES = new Set(["function", "custom", "namespace"]);
+const SUPPORTED_NAMED_TOOL_CHOICE_TYPES = new Set(["function", "custom"]);
 const SUPPORTED_STRING_TOOL_CHOICES = new Set(["auto", "none", "required"]);
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
@@ -134,18 +139,24 @@ function toolName(tool, path) {
   return pass({ name: undefined, path: `${path}.name` });
 }
 
-function validateTool(tool, path) {
+function validateTool(tool, path, allowNamespaces) {
   if (!isRecord(tool)) {
     return fail("Tool definitions must be JSON objects.", path, "invalid_type");
   }
   if (!SUPPORTED_TOOL_TYPES.has(tool.type)) {
     return fail("Hosted tools are not supported by the local adapter.", `${path}.type`, "unsupported_parameter");
   }
+  if (tool.type === "namespace" && !allowNamespaces) {
+    return fail("Nested tool namespaces are not supported by the local adapter.", `${path}.type`, "unsupported_parameter");
+  }
   if (tool.function !== undefined && !isRecord(tool.function)) {
     return fail("function must be a JSON object.", `${path}.function`, "invalid_type");
   }
   if (tool.type === "custom" && tool.function !== undefined) {
     return fail("Custom tools cannot use the nested function shape.", `${path}.function`, "invalid_value");
+  }
+  if (tool.type === "namespace" && (!Array.isArray(tool.tools) || tool.tools.length === 0)) {
+    return fail("Tool namespaces require a non-empty tools array.", `${path}.tools`, "invalid_value");
   }
 
   const nameResult = toolName(tool, path);
@@ -177,13 +188,20 @@ function validateTool(tool, path) {
   return null;
 }
 
-function normalizeToolList(tools, path, state) {
+function normalizeToolList(tools, path, state, allowNamespaces = true) {
   if (!Array.isArray(tools)) {
     return fail("Tools must be an array.", path, "invalid_type");
   }
-  if (state.toolCount + tools.length > MAX_DECLARED_TOOLS) {
+  if (allowNamespaces && tools.length > MAX_DECLARED_TOOLS) {
     return fail(
-      `Responses requests support at most ${MAX_DECLARED_TOOLS} declared tools.`,
+      `Responses requests support at most ${MAX_DECLARED_TOOLS} tools in a flat list.`,
+      path,
+      "limit_exceeded",
+    );
+  }
+  if (state.toolCount + tools.length > state.maxToolCount) {
+    return fail(
+      `Responses requests support at most ${state.maxToolCount} declared tools in total.`,
       path,
       "limit_exceeded",
     );
@@ -193,13 +211,21 @@ function normalizeToolList(tools, path, state) {
   const normalized = [];
   for (let index = 0; index < tools.length; index += 1) {
     const tool = tools[index];
-    const error = validateTool(tool, `${path}[${index}]`);
+    const toolPath = `${path}[${index}]`;
+    const error = validateTool(tool, toolPath, allowNamespaces);
     if (error) return error;
+    let nestedTools;
+    if (tool.type === "namespace") {
+      const nestedResult = normalizeToolList(tool.tools, `${toolPath}.tools`, state, false);
+      if (!nestedResult.ok) return nestedResult;
+      nestedTools = nestedResult.value;
+    }
     normalized.push({
       ...tool,
       ...(isRecord(tool.function) ? { function: { ...tool.function } } : {}),
       ...(isRecord(tool.parameters) ? { parameters: { ...tool.parameters } } : {}),
       ...(isRecord(tool.format) ? { format: { ...tool.format } } : {}),
+      ...(nestedTools ? { tools: nestedTools } : {}),
     });
   }
   return pass(normalized);
@@ -309,11 +335,15 @@ function normalizeToolChoice(toolChoice) {
   if (!isRecord(toolChoice)) {
     return fail("tool_choice must be a string or JSON object.", "tool_choice", "invalid_type");
   }
-  if (!SUPPORTED_TOOL_TYPES.has(toolChoice.type)) {
+  if (!SUPPORTED_NAMED_TOOL_CHOICE_TYPES.has(toolChoice.type)) {
     return fail("This tool_choice type is not supported.", "tool_choice.type", "unsupported_parameter");
   }
   if (typeof toolChoice.name !== "string" || toolChoice.name.trim() === "") {
     return fail("Named tool choices require a non-empty name.", "tool_choice.name");
+  }
+  if (toolChoice.namespace !== undefined
+    && (typeof toolChoice.namespace !== "string" || toolChoice.namespace.trim() === "")) {
+    return fail("Tool choice namespaces must be non-empty strings.", "tool_choice.namespace");
   }
   return pass({ ...toolChoice });
 }
@@ -347,10 +377,17 @@ export function validateAndNormalizeResponsesRequest(body) {
     return fail("instructions must be a string.", "instructions", "invalid_type");
   }
 
+  const inputItems = Array.isArray(body.input) ? body.input : [];
+  const hasNamespaceTools = [body.tools, ...inputItems
+    .filter((item) => item?.type === RESPONSES_ITEM.ADDITIONAL_TOOLS)
+    .map((item) => item.tools)]
+    .some((tools) => Array.isArray(tools) && tools.some((tool) => tool?.type === "namespace"));
+
   const state = {
     callIdsByClampedValue: new Map(),
     contentPartCount: 0,
     toolCount: 0,
+    maxToolCount: hasNamespaceTools ? MAX_TOTAL_DECLARED_TOOLS : MAX_DECLARED_TOOLS,
   };
   const inputResult = normalizeInput(body.input, state);
   if (!inputResult.ok) return inputResult;

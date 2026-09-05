@@ -13,6 +13,120 @@ import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
 const MAX_CALL_ID_LEN = 64;
 const clampCallId = (id) => (typeof id === "string" && id.length > MAX_CALL_ID_LEN ? id.substring(0, MAX_CALL_ID_LEN) : id);
 
+function namespaceToolKey(namespace, name) {
+  return `${namespace}\u0000${name}`;
+}
+
+function hashToolName(value, salt = 0) {
+  let hash = 2166136261 ^ salt;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function createNamespaceToolAlias(namespace, name, usedNames) {
+  const readable = `${namespace}__${name}`
+    .replace(/[^a-zA-Z0-9_.:\-]/g, "_")
+    .replace(/^[^a-zA-Z_]/, "_");
+  let salt = 0;
+  while (true) {
+    const alias = `${readable.slice(0, 55)}_${hashToolName(`${namespace}\u0000${name}`, salt)}`;
+    if (!usedNames.has(alias)) return alias;
+    salt += 1;
+  }
+}
+
+function convertResponsesTools(responseTools, customToolNames) {
+  const tools = [];
+  const namespaceToolMap = {};
+  const namespaceAliases = new Map();
+  const usedNames = new Set(
+    responseTools
+      .filter((tool) => tool?.type !== "namespace")
+      .map((tool) => tool?.name || tool?.function?.name)
+      .filter((name) => typeof name === "string" && name.trim() !== ""),
+  );
+
+  const appendTool = (tool, namespace = null) => {
+    if (!tool || typeof tool !== "object") return;
+    if (tool.type === "namespace") {
+      for (const nestedTool of tool.tools || []) appendTool(nestedTool, tool);
+      return;
+    }
+
+    // Preserve tools that are already in Chat Completions shape, including
+    // provider-specific extension fields unknown to the Responses adapter.
+    if (!namespace && tool.type === OPENAI_BLOCK.FUNCTION
+      && tool.function && typeof tool.function === "object") {
+      tools.push(tool);
+      return;
+    }
+
+    const rawName = tool.name || tool.function?.name;
+    if (typeof rawName !== "string" || rawName.trim() === "") return;
+    const name = namespace
+      ? createNamespaceToolAlias(namespace.name, rawName, usedNames)
+      : rawName;
+    usedNames.add(name);
+
+    if (namespace) {
+      namespaceAliases.set(namespaceToolKey(namespace.name, rawName), name);
+      namespaceToolMap[name] = {
+        namespace: namespace.name,
+        name: rawName,
+        type: tool.type,
+      };
+    }
+
+    if (tool.type === "custom") {
+      customToolNames.add(name);
+      const formatHint = [tool.format?.syntax, tool.format?.definition].filter(Boolean).join("\n");
+      tools.push({
+        type: OPENAI_BLOCK.FUNCTION,
+        function: {
+          name,
+          description: [
+            namespace?.description ? `Namespace ${namespace.name}: ${namespace.description}` : "",
+            String(tool.description || ""),
+            formatHint,
+          ].filter(Boolean).join("\n\n"),
+          parameters: {
+            type: "object",
+            properties: {
+              input: {
+                type: "string",
+                description: "Raw freeform input for this custom tool"
+              }
+            },
+            required: ["input"],
+            additionalProperties: false
+          }
+        }
+      });
+      return;
+    }
+
+    const flatTool = tool.function && typeof tool.function === "object" ? tool.function : tool;
+    tools.push({
+      type: OPENAI_BLOCK.FUNCTION,
+      function: {
+        name,
+        description: [
+          namespace?.description ? `Namespace ${namespace.name}: ${namespace.description}` : "",
+          String(flatTool.description || ""),
+        ].filter(Boolean).join("\n\n"),
+        parameters: normalizeToolParameters(flatTool.parameters),
+        strict: flatTool.strict,
+      },
+    });
+  };
+
+  for (const tool of responseTools) appendTool(tool);
+  return { tools, namespaceToolMap, namespaceAliases };
+}
+
 /**
  * Convert OpenAI Responses API request to OpenAI Chat Completions format
  */
@@ -37,6 +151,19 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
 
   const inputItems = normalizeResponsesInput(body.input);
   if (!inputItems) return body;
+
+  for (const item of inputItems) {
+    const itemType = item?.type || (item?.role ? RESPONSES_ITEM.MESSAGE : null);
+    if (itemType === RESPONSES_ITEM.ADDITIONAL_TOOLS && Array.isArray(item.tools)) {
+      additionalTools.push(...item.tools);
+    }
+  }
+
+  const responseTools = [
+    ...(Array.isArray(body.tools) ? body.tools : []),
+    ...additionalTools,
+  ];
+  const convertedTools = convertResponsesTools(responseTools, customToolNames);
 
   // Extract reasoning text from summary[].text (encrypted_content is continuity-only)
   const extractReasoningText = (item) => {
@@ -114,11 +241,14 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       const toolInput = itemType === RESPONSES_ITEM.CUSTOM_TOOL_CALL
         ? { input: typeof item.input === "string" ? item.input : JSON.stringify(item.input ?? "") }
         : item.arguments;
+      const functionName = typeof item.namespace === "string"
+        ? convertedTools.namespaceAliases.get(namespaceToolKey(item.namespace, item.name)) || item.name
+        : item.name;
       currentAssistantMsg.tool_calls.push({
         id: item.call_id,
         type: OPENAI_BLOCK.FUNCTION,
         function: {
-          name: item.name,
+          name: functionName,
           arguments: typeof toolInput === "string" ? toolInput : JSON.stringify(toolInput ?? {})
         }
       });
@@ -143,9 +273,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
         content: typeof item.output === "string" ? item.output : JSON.stringify(item.output)
       });
     }
-    else if (itemType === RESPONSES_ITEM.ADDITIONAL_TOOLS) {
-      if (Array.isArray(item.tools)) additionalTools.push(...item.tools);
-    }
+    else if (itemType === RESPONSES_ITEM.ADDITIONAL_TOOLS) continue;
     else if (itemType === RESPONSES_ITEM.REASONING) {
       // Buffer reasoning text; attached to next assistant message/function_call.
       // Also stash encrypted_content so a later openai→responses hop can restore
@@ -170,72 +298,24 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
     }
   }
 
-  // Convert tools format.
-  // Responses API supports "hosted" tools (e.g. { type: "request_user_input" }) that carry no
-  // explicit `name` field and cannot be represented as Chat Completions function declarations.
-  // Filter them out to avoid sending nameless functionDeclarations to downstream providers
-  // such as Gemini, which strictly validates function names.
-  const responseTools = [
-    ...(Array.isArray(body.tools) ? body.tools : []),
-    ...additionalTools,
-  ];
-  if (responseTools.length > 0) {
-    result.tools = responseTools
-      .map(tool => {
-        // Already in Chat Completions format: { type: "function", function: { name, ... } }
-        if (tool.function) return tool;
-        // Responses API function/custom tool: { type, name, description, parameters|format }.
-        // Chat Completions has no freeform custom-tool declaration, so expose custom
-        // tools as functions with one raw `input` string while retaining their names
-        // in translator-only metadata for the response conversion.
-        const name = tool.name;
-        if (!name || typeof name !== "string" || name.trim() === "") return null;
-        if (tool.type === "custom") {
-          customToolNames.add(name);
-          const formatHint = [tool.format?.syntax, tool.format?.definition].filter(Boolean).join("\n");
-          return {
-            type: OPENAI_BLOCK.FUNCTION,
-            function: {
-              name,
-              description: [String(tool.description || ""), formatHint].filter(Boolean).join("\n\n"),
-              parameters: {
-                type: "object",
-                properties: {
-                  input: {
-                    type: "string",
-                    description: "Raw freeform input for this custom tool"
-                  }
-                },
-                required: ["input"],
-                additionalProperties: false
-              }
-            }
-          };
-        }
-        // Responses API function tool: { type: "function", name, description, parameters }
-        // Only convert when a non-empty name is present; skip hosted tools without one.
-        return {
-          type: OPENAI_BLOCK.FUNCTION,
-          function: {
-            name,
-            description: String(tool.description || ""),
-            parameters: normalizeToolParameters(tool.parameters),
-            strict: tool.strict
-          }
-        };
-      })
-      .filter(Boolean);
-  }
+  if (convertedTools.tools.length > 0) result.tools = convertedTools.tools;
   if (customToolNames.size > 0) result._customToolNames = [...customToolNames];
+  if (Object.keys(convertedTools.namespaceToolMap).length > 0) {
+    result._namespaceToolMap = convertedTools.namespaceToolMap;
+  }
 
   // Responses names a selected tool directly; Chat Completions nests the name.
   const namedToolChoice = result.tool_choice;
   if (namedToolChoice && typeof namedToolChoice === "object"
     && (namedToolChoice.type === OPENAI_BLOCK.FUNCTION || namedToolChoice.type === "custom")
     && typeof namedToolChoice.name === "string" && namedToolChoice.name.trim() !== "") {
+    const selectedName = typeof namedToolChoice.namespace === "string"
+      ? convertedTools.namespaceAliases.get(namespaceToolKey(namedToolChoice.namespace, namedToolChoice.name))
+        || namedToolChoice.name
+      : namedToolChoice.name;
     result.tool_choice = {
       type: OPENAI_BLOCK.FUNCTION,
-      function: { name: namedToolChoice.name },
+      function: { name: selectedName },
     };
   }
 

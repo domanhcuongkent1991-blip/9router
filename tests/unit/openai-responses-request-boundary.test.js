@@ -184,6 +184,93 @@ describe("Responses compatibility request boundary", () => {
     }))).toMatchObject({ ok: false, error: { param: "tools[0].parameters", code: "invalid_type" } });
   });
 
+  it("accepts Codex namespace tools containing function tools", async () => {
+    const { validateAndNormalizeResponsesRequest } = await loadRequestSubject();
+    const namespaceTool = {
+      type: "namespace",
+      name: "mcp__example",
+      description: "Example MCP tools",
+      tools: [{
+        type: "function",
+        name: "lookup",
+        description: "Look up a value",
+        parameters: { type: "object", properties: { id: { type: "string" } } },
+      }],
+    };
+
+    expect(validateAndNormalizeResponsesRequest(validRequest({ tools: [namespaceTool] }))).toMatchObject({
+      ok: true,
+      value: {
+        tools: [{
+          type: "namespace",
+          name: "mcp__example",
+          tools: [{ type: "function", name: "lookup" }],
+        }],
+      },
+    });
+  });
+
+  it("accepts a namespace-qualified function choice but rejects selecting an entire namespace", async () => {
+    const { validateAndNormalizeResponsesRequest } = await loadRequestSubject();
+    const functionChoice = {
+      type: "function",
+      name: "lookup",
+      namespace: "mcp__example",
+    };
+
+    expect(validateAndNormalizeResponsesRequest(validRequest({
+      tool_choice: functionChoice,
+    }))).toMatchObject({ ok: true, value: { tool_choice: functionChoice } });
+
+    expect(validateAndNormalizeResponsesRequest(validRequest({
+      tool_choice: { type: "namespace", name: "mcp__example" },
+    }))).toMatchObject({
+      ok: false,
+      error: { param: "tool_choice.type", code: "unsupported_parameter" },
+    });
+  });
+
+  it("allows a larger bounded namespace while keeping flat tool limits", async () => {
+    const { validateAndNormalizeResponsesRequest } = await loadRequestSubject();
+    const namespaceTools = Array.from({ length: 129 }, (_, index) => ({
+      type: "function",
+      name: `lookup_${index}`,
+      parameters: { type: "object", properties: {} },
+    }));
+
+    expect(validateAndNormalizeResponsesRequest(validRequest({
+      tools: [{ type: "namespace", name: "mcp__example", tools: namespaceTools }],
+    }))).toMatchObject({ ok: true });
+
+    expect(validateAndNormalizeResponsesRequest(validRequest({
+      tools: namespaceTools,
+    }))).toMatchObject({ ok: false, error: { param: "tools", code: "limit_exceeded" } });
+  });
+
+  it("counts additional tools against the aggregate namespace limit without reapplying the flat limit", async () => {
+    const { validateAndNormalizeResponsesRequest } = await loadRequestSubject();
+    const namespaceTools = Array.from({ length: 129 }, (_, index) => ({
+      type: "function",
+      name: `lookup_${index}`,
+      parameters: { type: "object", properties: {} },
+    }));
+
+    expect(validateAndNormalizeResponsesRequest(validRequest({
+      tools: [{ type: "namespace", name: "mcp__example", tools: namespaceTools }],
+      input: [
+        { role: "user", content: "hello" },
+        {
+          type: "additional_tools",
+          tools: Array.from({ length: 128 }, (_, index) => ({
+            type: "function",
+            name: `late_bound_tool_${index}`,
+            parameters: { type: "object", properties: {} },
+          })),
+        },
+      ],
+    }))).toMatchObject({ ok: true });
+  });
+
   it("accepts Codex additional_tools while enforcing the aggregate tool limit", async () => {
     const { validateAndNormalizeResponsesRequest } = await loadRequestSubject();
     const customTool = { type: "custom", name: "exec", format: { type: "grammar" } };

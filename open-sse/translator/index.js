@@ -52,6 +52,14 @@ function stripContentTypes(body, stripList = []) {
 export function translateRequest(sourceFormat, targetFormat, model, body, stream = true, credentials = null, provider = null, reqLogger = null, stripList = [], connectionId = null, clientTool = null) {
   ensureInitialized();
   let result = body;
+  const carriedCompatibilityMetadata = {};
+  const carryCompatibilityMetadata = (value) => {
+    if (!value || typeof value !== "object") return;
+    for (const key of ["_customToolNames", "_namespaceToolMap"]) {
+      if (value[key] !== undefined) carriedCompatibilityMetadata[key] = value[key];
+    }
+  };
+  carryCompatibilityMetadata(result);
 
   // Strip explicit content types (opt-in via strip[] in PROVIDER_MODELS entry)
   stripContentTypes(result, stripList);
@@ -87,12 +95,14 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
     const directFn = requestRegistry.get(`${sourceFormat}:${targetFormat}`);
     if (directFn) {
       result = directFn(model, result, stream, credentials);
+      carryCompatibilityMetadata(result);
     } else {
       // Step 1: source -> openai (if source is not openai)
       if (sourceFormat !== FORMATS.OPENAI) {
         const toOpenAI = requestRegistry.get(`${sourceFormat}:${FORMATS.OPENAI}`);
         if (toOpenAI) {
           result = toOpenAI(model, result, stream, credentials);
+          carryCompatibilityMetadata(result);
           // Log OpenAI intermediate format
           reqLogger?.logOpenAIRequest?.(result);
         }
@@ -144,6 +154,10 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
         result._toolNameMap = toolNameMap;
       }
     }
+  }
+
+  for (const [key, value] of Object.entries(carriedCompatibilityMetadata)) {
+    if (result && typeof result === "object" && result[key] === undefined) result[key] = value;
   }
 
   // Antigravity cloaking disabled

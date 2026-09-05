@@ -262,6 +262,18 @@ function isCustomTool(state, name) {
   return !!name && state.customToolNames?.has(name);
 }
 
+export function resolveResponsesToolIdentity(namespaceToolMap, name) {
+  const mapped = name && namespaceToolMap?.[name];
+  return mapped && typeof mapped === "object"
+    ? { name: mapped.name || name, namespace: mapped.namespace }
+    : { name, namespace: undefined };
+}
+
+export function normalizeResponsesCustomToolNames(value) {
+  if (value instanceof Set) return value;
+  return new Set(Array.isArray(value) ? value : []);
+}
+
 function extractCustomToolInput(argumentsText) {
   if (typeof argumentsText !== "string") return "";
   try {
@@ -286,6 +298,7 @@ function emitToolCall(state, emit, tc) {
   if (!state.funcItemAdded[tcIdx] && callId && state.funcNames[tcIdx]) {
     state.funcItemAdded[tcIdx] = true;
     const custom = isCustomTool(state, state.funcNames[tcIdx]);
+    const identity = resolveResponsesToolIdentity(state.namespaceToolMap, state.funcNames[tcIdx]);
 
     emit("response.output_item.added", {
       type: "response.output_item.added",
@@ -295,7 +308,8 @@ function emitToolCall(state, emit, tc) {
         type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
         ...(custom ? { input: "" } : { arguments: "" }),
         call_id: callId,
-        name: state.funcNames[tcIdx] || ""
+        name: identity.name || "",
+        ...(identity.namespace ? { namespace: identity.namespace } : {}),
       }
     });
   }
@@ -324,6 +338,7 @@ function closeToolCall(state, emit, idx) {
   if (callId && !state.funcItemDone[idx]) {
     const args = state.funcArgsBuf[idx] || "{}";
     const custom = isCustomTool(state, state.funcNames[idx]);
+    const identity = resolveResponsesToolIdentity(state.namespaceToolMap, state.funcNames[idx]);
 
     if (custom) {
       const input = extractCustomToolInput(args);
@@ -356,7 +371,8 @@ function closeToolCall(state, emit, idx) {
         type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
         ...(custom ? { input: extractCustomToolInput(args) } : { arguments: args }),
         call_id: callId,
-        name: state.funcNames[idx] || ""
+        name: identity.name || "",
+        ...(identity.namespace ? { namespace: identity.namespace } : {}),
       }
     });
 

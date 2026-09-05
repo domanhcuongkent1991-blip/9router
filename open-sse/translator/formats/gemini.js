@@ -341,6 +341,31 @@ function ensureArrayItems(obj) {
   for (const v of Object.values(obj)) if (v && typeof v === "object") ensureArrayItems(v);
 }
 
+// A few MCP/OpenAPI generators emit shorthand property schemas such as
+// `{ properties: { value: "object" } }`. Gemini expects every property value
+// to be a Schema object, so normalize only recognized JSON Schema type names.
+const JSON_SCHEMA_TYPES = new Set(["string", "number", "integer", "boolean", "array", "object"]);
+function normalizeShorthandPropertySchemas(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return;
+
+  if (obj.properties && typeof obj.properties === "object" && !Array.isArray(obj.properties)) {
+    for (const [name, value] of Object.entries(obj.properties)) {
+      if (typeof value === "string") {
+        if (JSON_SCHEMA_TYPES.has(value)) {
+          obj.properties[name] = { type: value };
+        } else if (value === "null") {
+          // Gemini has no null schema type; keep the property permissive.
+          obj.properties[name] = { type: "string" };
+        }
+      }
+    }
+  }
+
+  for (const value of Object.values(obj)) {
+    if (value && typeof value === "object") normalizeShorthandPropertySchemas(value);
+  }
+}
+
 // Clean JSON Schema for Antigravity API compatibility - removes unsupported keywords recursively
 export function cleanJSONSchemaForAntigravity(schema) {
   if (!schema || typeof schema !== "object") return schema;
@@ -349,6 +374,7 @@ export function cleanJSONSchemaForAntigravity(schema) {
   let cleaned = schema;
 
   // Phase 1: Convert and prepare
+  normalizeShorthandPropertySchemas(cleaned);
   convertConstToEnum(cleaned);
   convertEnumValuesToStrings(cleaned);
 
