@@ -10,6 +10,8 @@ const SENSITIVE_KEY = /^(?:authorization|proxy-authorization|cookie|set-cookie|x
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/giu;
 const JWT = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b/gu;
 const ASSIGNMENT = /\b(api[-_]?key|access[-_]?token|refresh[-_]?token|password|passwd|secret|client[-_]?secret)\s*([:=])\s*([^\s,;]+)/giu;
+const CREDENTIAL_HEADER = /(^|[\r\n])([ \t]*(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)[ \t]*[:=][ \t]*)([^\r\n]*)/gimu;
+const MAX_KNOWN_SECRETS = 64;
 
 export class CompanionRedactionError extends Error {
   constructor(reason) {
@@ -40,6 +42,9 @@ function validateConfiguration(options) {
       || Buffer.byteLength(value, "utf8") > DEFAULT_LIMITS.maxStringBytes)) {
     throw new CompanionRedactionError("invalid_known_secrets");
   }
+  if (options.knownSecrets.length > MAX_KNOWN_SECRETS) {
+    throw new CompanionRedactionError("too_many_known_secrets");
+  }
   return limits;
 }
 
@@ -58,6 +63,7 @@ export function createCompanionRedactor(options = {}) {
     }
     let output = value;
     for (const secret of knownSecrets) output = replaceAllLiteral(output, secret);
+    output = output.replace(CREDENTIAL_HEADER, (_, boundary, label) => `${boundary}${label}${REDACTED}`);
     output = output.replace(BEARER, "Bearer [REDACTED]");
     output = output.replace(JWT, REDACTED);
     output = output.replace(ASSIGNMENT, (_, key, separator) => (
@@ -140,7 +146,11 @@ export function createCompanionRedactor(options = {}) {
   function sanitizeForDisplay(value) {
     if (value === null) return null;
     if (typeof value !== "string") throw new CompanionRedactionError("display_value_not_string");
-    return redactString(value);
+    const output = redactString(value);
+    if (Buffer.byteLength(output, "utf8") > limits.maxOutputBytes) {
+      throw new CompanionRedactionError("output_too_large");
+    }
+    return output;
   }
 
   function redactError(error) {

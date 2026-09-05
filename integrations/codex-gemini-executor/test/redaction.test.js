@@ -103,3 +103,33 @@ test("normalizes sparse arrays and rejects hostile Error accessors safely", () =
     return true;
   });
 });
+
+test("redacts credential header and assignment values in free text", () => {
+  const redactor = createCompanionRedactor();
+  const input = [
+    "Authorization: Basic dXNlcjpwYXNz",
+    "Proxy-Authorization=Digest opaque-value",
+    "Cookie: sid=private-cookie; theme=dark",
+    "Set-Cookie: session=private-cookie; HttpOnly",
+    "x-api-key: private-key",
+  ].join("\n");
+  const output = redactor.sanitizeForDisplay(input);
+  assert.equal(output.includes("dXNlcjpwYXNz"), false);
+  assert.equal(output.includes("opaque-value"), false);
+  assert.equal(output.includes("private-cookie"), false);
+  assert.equal(output.includes("private-key"), false);
+  assert.match(output, /Authorization: \[REDACTED\]/u);
+  assert.match(output, /Cookie: \[REDACTED\]/u);
+});
+
+test("bounds known-secret catalogs and approval display output", () => {
+  assert.throws(
+    () => createCompanionRedactor({ knownSecrets: Array.from({ length: 65 }, (_, index) => `secret-${index}`) }),
+    { code: "redaction_failed", details: { reason: "too_many_known_secrets" } },
+  );
+  const redactor = createCompanionRedactor({ maxStringBytes: 32, maxOutputBytes: 12 });
+  assert.throws(
+    () => redactor.sanitizeForDisplay("a".repeat(13)),
+    { code: "redaction_failed", details: { reason: "output_too_large" } },
+  );
+});
