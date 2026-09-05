@@ -339,21 +339,24 @@ export function createGeminiCompanionCore({
 
   function cleanupRuntime(runtime, shouldCancel, deadline = Date.now() + cleanupTimeoutMs) {
     if ((typeof runtime !== "object" || runtime === null) && typeof runtime !== "function") {
-      return Promise.resolve(true);
+      return Promise.resolve({ failed: true, shutdownConfirmed: false });
     }
     const existing = runtimeCleanups.get(runtime);
     if (existing) return existing;
     const operation = (async () => {
       let failed = false;
+      let cancelConfirmed = !shouldCancel;
       if (shouldCancel && typeof runtime.cancel === "function") {
         const outcome = await waitUntilDeadline(invoke(() => runtime.cancel()), deadline);
         failed ||= outcome.failed;
+        cancelConfirmed = !outcome.failed;
       }
       if (typeof runtime.dispose === "function") {
         const outcome = await waitUntilDeadline(invoke(() => runtime.dispose()), deadline);
         failed ||= outcome.failed;
+        return { failed, shutdownConfirmed: !outcome.failed };
       }
-      return failed;
+      return { failed, shutdownConfirmed: cancelConfirmed };
     })();
     runtimeCleanups.set(runtime, operation);
     return operation;
@@ -396,9 +399,9 @@ export function createGeminiCompanionCore({
     let failed = false;
     let runtimeCleanupConfirmed = true;
     if (job.runtime) {
-      const runtimeFailed = await cleanupRuntime(job.runtime, shouldCancel, deadline);
-      failed ||= runtimeFailed;
-      runtimeCleanupConfirmed = !runtimeFailed;
+      const runtimeCleanup = await cleanupRuntime(job.runtime, shouldCancel, deadline);
+      failed ||= runtimeCleanup.failed;
+      runtimeCleanupConfirmed = runtimeCleanup.shutdownConfirmed;
     }
     if (job.lease && !job.leaseReleaseDeferred && runtimeCleanupConfirmed) {
       const leaseFailed = await releaseLease(job.lease, deadline);
@@ -512,10 +515,10 @@ export function createGeminiCompanionCore({
         const workspaceSetupLease = job.lease;
         const workspaceSetupRuntime = job.runtime;
         const finishAbandonedWorkspaceSetup = async () => {
-          const runtimeFailed = workspaceSetupRuntime
+          const runtimeCleanup = workspaceSetupRuntime
             ? await cleanupRuntime(workspaceSetupRuntime, true)
-            : false;
-          if (workspaceSetupLease && !runtimeFailed) await releaseLease(workspaceSetupLease);
+            : { shutdownConfirmed: true };
+          if (workspaceSetupLease && runtimeCleanup.shutdownConfirmed) await releaseLease(workspaceSetupLease);
         };
         workspace = await awaitInterruptible(
           job,
@@ -556,8 +559,8 @@ export function createGeminiCompanionCore({
               if (runtimeSetupLease) job.leaseReleaseDeferred = true;
             },
             onLateValue: async (lateRuntime) => {
-              const runtimeFailed = await cleanupRuntime(lateRuntime, true);
-              if (runtimeSetupLease && !runtimeFailed) await releaseLease(runtimeSetupLease);
+              const runtimeCleanup = await cleanupRuntime(lateRuntime, true);
+              if (runtimeSetupLease && runtimeCleanup.shutdownConfirmed) await releaseLease(runtimeSetupLease);
             },
             onLateError: () => (runtimeSetupLease ? releaseLease(runtimeSetupLease) : undefined),
           },

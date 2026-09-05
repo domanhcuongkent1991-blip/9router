@@ -77,9 +77,14 @@ function approvalMessage(approval) {
 
 function stateFrom(context) {
   try {
-    return typeof context?.mcpReq?.requestState === "function" ? context.mcpReq.requestState() : undefined;
+    const request = context?.mcpReq;
+    const state = typeof request?.requestState === "function" ? request.requestState() : undefined;
+    if (state === undefined && (request?.inputResponses !== undefined || request?.droppedInputResponseKeys !== undefined)) {
+      throw new Error("invalid_approval_correlation");
+    }
+    return state;
   } catch {
-    return undefined;
+    throw new Error("invalid_approval_correlation");
   }
 }
 

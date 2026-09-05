@@ -49,6 +49,41 @@ test("reports the job id early for a terminal run", async () => {
   assert.equal(result.structuredContent.status, "completed");
 });
 
+test("fails closed without starting a job when verified request state access throws", async () => {
+  let starts = 0;
+  const core = {
+    async runGeminiTask() { starts += 1; return { jobId: "unexpected", status: "completed" }; },
+    getGeminiStatus() {}, async cancelGeminiTask() {},
+  };
+  const server = createGeminiMcpServer({ core, ServerClass: FakeServer });
+  const run = server.tools.get("run_gemini_task").handler;
+  await assert.rejects(
+    run({ task: "x", workspace: "D:\\Repo" }, { mcpReq: { requestState: () => { throw new Error("raw verifier secret"); } } }),
+    (error) => error.message === "invalid_approval_correlation" && !error.message.includes("raw verifier secret"),
+  );
+  assert.equal(starts, 0);
+});
+
+test("fails closed on orphan input responses without verified request state", async () => {
+  for (const orphan of [
+    { inputResponses: { approval: { action: "cancel" } } },
+    { droppedInputResponseKeys: ["approval"] },
+  ]) {
+    let starts = 0;
+    const core = {
+      async runGeminiTask() { starts += 1; return { jobId: "unexpected", status: "completed" }; },
+      getGeminiStatus() {}, async cancelGeminiTask() {},
+    };
+    const server = createGeminiMcpServer({ core, ServerClass: FakeServer });
+    const run = server.tools.get("run_gemini_task").handler;
+    await assert.rejects(
+      run({ task: "x", workspace: "D:\\Repo" }, { mcpReq: { requestState: () => undefined, ...orphan } }),
+      (error) => error.message === "invalid_approval_correlation",
+    );
+    assert.equal(starts, 0);
+  }
+});
+
 function approvalCore(count = 1) {
   const decisions = [];
   return {

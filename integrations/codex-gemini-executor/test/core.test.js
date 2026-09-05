@@ -520,6 +520,27 @@ test("keeps the writer lease when runtime disposal cannot be confirmed", async (
   assert.equal(blocked.error?.code, "workspace_locked");
 });
 
+test("releases the writer lease when cancel fails but runtime disposal succeeds", async () => {
+  const leases = createWorkspaceLeaseManager();
+  const request = { ...baseRequest, access: "workspace-write", effort: "medium", timeoutMinutes: 30 };
+  const calls = [];
+  const core = lifecycleCore({
+    workspaceLeases: leases,
+    createRuntime: async () => ({
+      run: async () => { throw new Error("turn failed"); },
+      cancel: async () => { calls.push("cancel"); throw new Error("already closed"); },
+      dispose: async () => calls.push("dispose"),
+    }),
+    generateJobId: () => "job_cancel_failed_disposed",
+  });
+
+  const result = await core.runGeminiTask({ ...baseRequest, access: "workspace-write" });
+  assert.equal(result.status, "failed");
+  assert.deepEqual(calls, ["cancel", "dispose"]);
+  const available = await leases.acquire(request);
+  await available.release();
+});
+
 test("contains persistence failures at starting, running, and terminal snapshots", async () => {
   for (const failAt of [1, 2, 3]) {
     let persistCalls = 0;
