@@ -2,7 +2,7 @@ const REDACTED = "[REDACTED]";
 const DEFAULT_LIMITS = Object.freeze({
   maxDepth: 12,
   maxNodes: 2_048,
-  maxStringBytes: 64 * 1024,
+  maxStringBytes: 1024 * 1024,
   maxOutputBytes: 256 * 1024,
 });
 
@@ -12,6 +12,7 @@ const JWT = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b/gu;
 const ASSIGNMENT = /\b(api[-_]?key|access[-_]?token|refresh[-_]?token|password|passwd|secret|client[-_]?secret)\s*([:=])\s*([^\s,;]+)/giu;
 const CREDENTIAL_HEADER = /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)[ \t]*[:=][ \t]*)([^\r\n]*)/gimu;
 const MAX_KNOWN_SECRETS = 64;
+const MAX_KNOWN_SECRET_BYTES = 16 * 1024;
 
 export class CompanionRedactionError extends Error {
   constructor(reason) {
@@ -39,7 +40,7 @@ function validateConfiguration(options) {
   if (!Array.isArray(options.knownSecrets)
     || options.knownSecrets.some((value) => typeof value !== "string"
       || value.length === 0
-      || Buffer.byteLength(value, "utf8") > DEFAULT_LIMITS.maxStringBytes)) {
+      || Buffer.byteLength(value, "utf8") > MAX_KNOWN_SECRET_BYTES)) {
     throw new CompanionRedactionError("invalid_known_secrets");
   }
   if (options.knownSecrets.length > MAX_KNOWN_SECRETS) {

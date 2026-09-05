@@ -16,6 +16,7 @@ const ERROR_CATEGORIES = new Set([
 ]);
 const RUNTIME_RESULT_KEYS = new Set(["sessionId", "finalAnswer", "filesChanged", "tests"]);
 const MAX_SESSION_ID_BYTES = 512;
+const MAX_FINAL_ANSWER_BYTES = 64 * 1024;
 const MAX_FILES_CHANGED = 1_024;
 const MAX_FILE_PATH_BYTES = 4_096;
 const MAX_TEST_RECORDS = 256;
@@ -102,6 +103,7 @@ function normalizeRuntimeResult(redactor, rawResult) {
   if (!isPlainRecord(result)
     || Object.keys(result).some((key) => !RUNTIME_RESULT_KEYS.has(key))
     || typeof result.finalAnswer !== "string"
+    || byteLength(result.finalAnswer) > MAX_FINAL_ANSWER_BYTES
     || !Array.isArray(result.filesChanged)
     || result.filesChanged.length > MAX_FILES_CHANGED
     || result.filesChanged.some((file) => typeof file !== "string" || byteLength(file) > MAX_FILE_PATH_BYTES)
@@ -356,8 +358,8 @@ export function createGeminiCompanionCore({
     if (event?.type === "assistant_delta" && typeof event.text === "string") {
       const remaining = maxAccumulatedOutputBytes - byteLength(job.output);
       if (remaining > 0) {
-        const boundedDelta = utf8Prefix(event.text, remaining);
-        const combined = redactor.sanitizeForDisplay(`${job.output}${boundedDelta}`);
+        const sanitizedDelta = redactor.sanitizeForDisplay(event.text);
+        const combined = redactor.sanitizeForDisplay(`${job.output}${sanitizedDelta}`);
         job.output = utf8Prefix(combined, maxAccumulatedOutputBytes);
       }
       await publish(job, { status: "running", output: job.output });
@@ -372,11 +374,13 @@ export function createGeminiCompanionCore({
     clearTimers(job);
     const deadline = Date.now() + cleanupTimeoutMs;
     let failed = false;
+    let runtimeCleanupConfirmed = true;
     if (job.runtime) {
       const runtimeFailed = await cleanupRuntime(job.runtime, shouldCancel, deadline);
       failed ||= runtimeFailed;
+      runtimeCleanupConfirmed = !runtimeFailed;
     }
-    if (job.lease && !job.leaseReleaseDeferred) {
+    if (job.lease && !job.leaseReleaseDeferred && runtimeCleanupConfirmed) {
       const leaseFailed = await releaseLease(job.lease, deadline);
       failed ||= leaseFailed;
     }
@@ -467,8 +471,8 @@ export function createGeminiCompanionCore({
             if (runtimeSetupLease) job.leaseReleaseDeferred = true;
           },
           onLateValue: async (lateRuntime) => {
-            await cleanupRuntime(lateRuntime, true);
-            if (runtimeSetupLease) await releaseLease(runtimeSetupLease);
+            const runtimeFailed = await cleanupRuntime(lateRuntime, true);
+            if (runtimeSetupLease && !runtimeFailed) await releaseLease(runtimeSetupLease);
           },
           onLateError: () => (runtimeSetupLease ? releaseLease(runtimeSetupLease) : undefined),
         },

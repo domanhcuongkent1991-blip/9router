@@ -358,6 +358,20 @@ test("truncates a large event in linear bounded space without failing the job", 
   assert.equal(result.output.includes("�"), false);
 });
 
+test("redacts a complete delta before applying the accumulated output limit", async () => {
+  const { core } = fixture({
+    maxAccumulatedOutputBytes: 16,
+    run: async ({ onEvent }) => {
+      await onEvent({ type: "assistant_delta", text: SECRET });
+      return { finalAnswer: "done", filesChanged: [], tests: [] };
+    },
+  });
+  const result = await core.runGeminiTask(baseRequest);
+  assert.equal(result.status, "completed");
+  assert.equal(result.output, "[REDACTED]");
+  assert.equal(SECRET.startsWith(result.output), false);
+});
+
 test("cancellation wins while compatibility is pending", async () => {
   const compatibility = deferred();
   let leaseCalls = 0;
@@ -478,11 +492,32 @@ test("awaits interrupt before dispose and bounds a hung interrupt", async () => 
   await new Promise((resolve) => setImmediate(resolve));
   const cancelled = await settlesWithin(core.cancelGeminiTask("job_interrupt_order"));
   assert.equal(cancelled.value.status, "cancelled");
-  assert.deepEqual(calls, ["cancel-start", "dispose", "release"]);
+  assert.deepEqual(calls, ["cancel-start", "dispose"]);
   cancelGate.resolve();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(calls, ["cancel-start", "dispose", "release", "cancel-end"]);
+  assert.deepEqual(calls, ["cancel-start", "dispose", "cancel-end"]);
   assert.equal((await running).status, "cancelled");
+});
+
+test("keeps the writer lease when runtime disposal cannot be confirmed", async () => {
+  const leases = createWorkspaceLeaseManager();
+  const request = { ...baseRequest, access: "workspace-write", effort: "medium", timeoutMinutes: 30 };
+  const core = lifecycleCore({
+    workspaceLeases: leases,
+    createRuntime: async () => ({
+      run: async () => ({ finalAnswer: "done", filesChanged: [], tests: [] }),
+      dispose: () => new Promise(() => {}),
+    }),
+    generateJobId: () => "job_unconfirmed_dispose",
+    cleanupTimeoutMs: 10,
+  });
+  const result = await core.runGeminiTask({ ...baseRequest, access: "workspace-write" });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.category, "protocol_error");
+
+  const blocked = await leaseOutcome(leases, request);
+  if (blocked.lease) await blocked.lease.release();
+  assert.equal(blocked.error?.code, "workspace_locked");
 });
 
 test("contains persistence failures at starting, running, and terminal snapshots", async () => {
@@ -613,6 +648,36 @@ test("holds a writer lease until an abandoned runtime rejects", async () => {
   await new Promise((resolve) => setImmediate(resolve));
   const available = await leases.acquire(request);
   await available.release();
+  assert.equal((await running).status, "cancelled");
+});
+
+test("keeps a transferred writer lease when late runtime cleanup cannot be confirmed", async () => {
+  const runtimeStage = deferred();
+  const factoryStarted = deferred();
+  const leases = createWorkspaceLeaseManager();
+  const request = { ...baseRequest, access: "workspace-write", effort: "medium", timeoutMinutes: 30 };
+  const core = lifecycleCore({
+    workspaceLeases: leases,
+    createRuntime: () => {
+      factoryStarted.resolve();
+      return runtimeStage.promise;
+    },
+    generateJobId: () => "job_hold_failed_late_cleanup",
+    cleanupTimeoutMs: 10,
+  });
+  const running = core.runGeminiTask({ ...baseRequest, access: "workspace-write" });
+  await factoryStarted.promise;
+  assert.equal((await core.cancelGeminiTask("job_hold_failed_late_cleanup")).status, "cancelled");
+
+  runtimeStage.resolve({
+    run: async () => ({ finalAnswer: "late", filesChanged: [], tests: [] }),
+    cancel: async () => {},
+    dispose: () => new Promise(() => {}),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const blocked = await leaseOutcome(leases, request);
+  if (blocked.lease) await blocked.lease.release();
+  assert.equal(blocked.error?.code, "workspace_locked");
   assert.equal((await running).status, "cancelled");
 });
 
