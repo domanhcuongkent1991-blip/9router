@@ -1,0 +1,13 @@
+{
+  "name": "@9router/codex-gemini-executor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-concurrency=2",
+    "test:adapter": "node --test --test-concurrency=2 test/compatibility.test.js test/adapter.test.js test/startup.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
