@@ -28,6 +28,19 @@ describe("Codex CLI Responses → OpenAI", () => {
     expect(typeof asst.tool_calls[0].function.arguments).toBe("string");
   });
 
+  it.each(["function", "custom"])("maps named %s tool_choice to Chat Completions shape", (type) => {
+    const out = R2O({
+      input: "hello",
+      tool_choice: { type, name: "lookup" },
+      tools: [{ type, name: "lookup" }],
+    });
+
+    expect(out.tool_choice).toEqual({
+      type: "function",
+      function: { name: "lookup" },
+    });
+  });
+
   // openai-responses.js:75-77 — input_image uses file_id as raw url
   // KNOWN BUG
   it.fails("input_image with file_id is not used as a raw url", () => {

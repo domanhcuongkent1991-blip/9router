@@ -228,6 +228,17 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   }
   if (customToolNames.size > 0) result._customToolNames = [...customToolNames];
 
+  // Responses names a selected tool directly; Chat Completions nests the name.
+  const namedToolChoice = result.tool_choice;
+  if (namedToolChoice && typeof namedToolChoice === "object"
+    && (namedToolChoice.type === OPENAI_BLOCK.FUNCTION || namedToolChoice.type === "custom")
+    && typeof namedToolChoice.name === "string" && namedToolChoice.name.trim() !== "") {
+    result.tool_choice = {
+      type: OPENAI_BLOCK.FUNCTION,
+      function: { name: namedToolChoice.name },
+    };
+  }
+
   // Cleanup Responses API specific fields
   // Map Responses-only max_output_tokens to Chat max_tokens (avoid leaking unknown field upstream)
   if (result.max_output_tokens !== undefined) {
