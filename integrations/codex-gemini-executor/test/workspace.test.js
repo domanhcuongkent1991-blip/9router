@@ -71,3 +71,20 @@ test("returns a bounded deduplicated file list from the retained worktree", asyn
     ["-C", `${root}\\job_1`, "ls-files", "--others", "--exclude-standard", "-z"],
   ]);
 });
+
+test("resolves a canonical Git top-level before writer locking", async () => {
+  const calls = [];
+  const manager = createWorkspaceManager({
+    worktreeRoot: root, mkdirPath: async () => {}, lstatPath: async () => {},
+    realpathPath: async (value) => value.toLowerCase() === "d:\\repo" ? "D:\\Repo" : value,
+    execFile: async (file, args, options) => {
+      calls.push([file, args, options]);
+      return { stdout: "D:\\Repo\n" };
+    },
+  });
+  assert.deepEqual(await manager.resolveRepository({ workspace: "D:\\Repo\\packages\\app", access: "workspace-write" }), {
+    repositoryRoot: "D:\\Repo",
+  });
+  assert.deepEqual(calls[0][1], ["-C", "D:\\Repo\\packages\\app", "rev-parse", "--show-toplevel"]);
+  assert.equal(calls[0][2].shell, false);
+});

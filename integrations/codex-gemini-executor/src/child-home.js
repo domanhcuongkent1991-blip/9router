@@ -18,6 +18,10 @@ name = "9Router Gemini"
 base_url = "http://127.0.0.1:20128/v1"
 env_key = "NINEROUTER_API_KEY"
 wire_api = "responses"
+requires_openai_auth = false
+request_max_retries = 1
+stream_max_retries = 1
+stream_idle_timeout_ms = 300000
 `;
 }
 
@@ -39,26 +43,29 @@ export function createChildHomeManager({ runtimeRoot, mkdirPath, writeFile, rena
   const configPath = win32.join(codexHome, "config.toml");
   const tempPath = `${configPath}.tmp`;
   const config = configFor(fixedModel);
+  let preparation = Promise.resolve();
 
-  async function prepare(environment) {
+  function prepare(environment) {
     if (environment === null || typeof environment !== "object" || Array.isArray(environment)) {
-      throw new ChildHomeError("child_home_error", "invalid_environment");
+      return Promise.reject(new ChildHomeError("child_home_error", "invalid_environment"));
     }
     if (environment[CHILD_MARKER] === "1") {
-      throw new ChildHomeError("recursive_child_blocked", "recursion_marker_present");
+      return Promise.reject(new ChildHomeError("recursive_child_blocked", "recursion_marker_present"));
     }
-    try {
-      await mkdirPath(codexHome, { recursive: true });
-      await writeFile(tempPath, config, { encoding: "utf8", flag: "w", mode: 0o600 });
-      await renamePath(tempPath, configPath);
-    } catch (error) {
-      if (error instanceof ChildHomeError) throw error;
-      throw new ChildHomeError("child_home_error", "write_failed");
-    }
-    return Object.freeze({
-      codexHome,
-      environment: Object.freeze({ ...environment, [CHILD_MARKER]: "1" }),
+    const childEnvironment = Object.freeze({ ...environment, [CHILD_MARKER]: "1" });
+    const operation = preparation.then(async () => {
+      try {
+        await mkdirPath(codexHome, { recursive: true });
+        await writeFile(tempPath, config, { encoding: "utf8", flag: "w", mode: 0o600 });
+        await renamePath(tempPath, configPath);
+      } catch (error) {
+        if (error instanceof ChildHomeError) throw error;
+        throw new ChildHomeError("child_home_error", "write_failed");
+      }
+      return Object.freeze({ codexHome, environment: childEnvironment });
     });
+    preparation = operation.catch(() => {});
+    return operation;
   }
 
   return Object.freeze({ prepare });

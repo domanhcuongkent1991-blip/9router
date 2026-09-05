@@ -24,8 +24,13 @@ function compatibilityError(stage, reason, observation) {
   });
 }
 
-function boundedAppend(current, delta) {
-  const bytes = Buffer.from(`${current}${delta}`, "utf8");
+function boundedAppend(current, delta, sanitizeForDisplay) {
+  let sanitized;
+  try { sanitized = sanitizeForDisplay(`${current}${delta}`); } catch {
+    throw compatibilityError("event", "sanitization_failed");
+  }
+  if (typeof sanitized !== "string") throw compatibilityError("event", "invalid_sanitizer_output");
+  const bytes = Buffer.from(sanitized, "utf8");
   if (bytes.length <= MAX_FINAL_ANSWER_BYTES) return bytes.toString("utf8");
   return bytes.subarray(0, MAX_FINAL_ANSWER_BYTES).toString("utf8").replace(/�$/u, "");
 }
@@ -79,7 +84,8 @@ export async function prepareAppServerRuntime({
 
   let child;
   try {
-    child = launchAppServer({ executablePath, codexHome, workingDirectory, environment, spawnProcess });
+    if (typeof observation?.executablePath !== "string") throw new Error("missing observed executable path");
+    child = launchAppServer({ executablePath: observation.executablePath, codexHome, workingDirectory, environment, spawnProcess });
   } catch {
     throw compatibilityError("launch", "launch_failed", observation);
   }
@@ -123,7 +129,7 @@ export async function prepareAppServerRuntime({
         throw compatibilityError("event", "active_turn_mismatch", observation);
       }
       if (!active.turnId) active.turnId = event.turnId;
-      if (event.type === "assistant_delta") active.answer = boundedAppend(active.answer, event.text);
+      if (event.type === "assistant_delta") active.answer = boundedAppend(active.answer, event.text, sanitizeForDisplay);
       await active.onEvent(event);
       if (event.type === "turn_completed") active.terminal.resolve({ event });
     } catch (error) {
@@ -210,6 +216,11 @@ export async function prepareAppServerRuntime({
       }),
     };
     const turn = await session.startTurn({ threadId: thread.threadId, task: request.task, effort: request.effort });
+    if (active.turnId !== null && active.turnId !== turn.turnId) {
+      const error = compatibilityError("turn_start", "turn_start_mismatch", observation);
+      fail(error);
+      throw error;
+    }
     active.turnId = turn.turnId;
     const outcome = await Promise.race([
       terminal.promise,

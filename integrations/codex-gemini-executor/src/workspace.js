@@ -18,6 +18,10 @@ function contained(root, candidate) {
   return relative.length > 0 && relative !== ".." && !relative.startsWith(`..${win32.sep}`) && !win32.isAbsolute(relative);
 }
 
+function containedOrEqual(root, candidate) {
+  return win32.normalize(root).toLowerCase() === win32.normalize(candidate).toLowerCase() || contained(root, candidate);
+}
+
 function safeJobSegment(jobId) {
   if (typeof jobId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(jobId)) {
     throw new WorkspacePrepareError("workspace_prepare_error", "invalid_job_id");
@@ -60,7 +64,7 @@ export function createWorkspaceManager({
     }
   }
 
-  async function prepare(request, jobId) {
+  async function prepare(request, jobId, repository) {
     const workspace = request?.workspace;
     if (typeof workspace !== "string" || !win32.isAbsolute(workspace)) {
       throw new WorkspacePrepareError("workspace_prepare_error", "invalid_workspace");
@@ -72,9 +76,10 @@ export function createWorkspaceManager({
       throw new WorkspacePrepareError("workspace_prepare_error", "invalid_access");
     }
 
-    const status = await git(workspace, ["status", "--porcelain=v1", "-z"]);
+    const repositoryRoot = repository?.repositoryRoot ?? workspace;
+    const status = await git(repositoryRoot, ["status", "--porcelain=v1", "-z"]);
     if (status.length > 0) throw new WorkspacePrepareError("workspace_dirty", "existing_changes");
-    const head = (await git(workspace, ["rev-parse", "--verify", "HEAD"])).trim().toLowerCase();
+    const head = (await git(repositoryRoot, ["rev-parse", "--verify", "HEAD"])).trim().toLowerCase();
     if (!COMMIT_PATTERN.test(head)) throw new WorkspacePrepareError("workspace_prepare_error", "invalid_head");
 
     await mkdirPath(worktreeRoot, { recursive: true });
@@ -94,7 +99,7 @@ export function createWorkspaceManager({
       if (error?.code !== "ENOENT") throw new WorkspacePrepareError("workspace_prepare_error", "worktree_probe_failed");
     }
 
-    await git(workspace, ["worktree", "add", "--detach", target, head]);
+    await git(repositoryRoot, ["worktree", "add", "--detach", target, head]);
     let canonicalTarget;
     try {
       canonicalTarget = await realpathPath(target);
@@ -106,6 +111,23 @@ export function createWorkspaceManager({
       throw new WorkspacePrepareError("workspace_prepare_error", "worktree_escape");
     }
     return Object.freeze({ executionWorkspace: canonicalTarget, worktreePath: canonicalTarget, head });
+  }
+
+  async function resolveRepository(request) {
+    const workspace = request?.workspace;
+    if (request?.access !== "workspace-write" || typeof workspace !== "string" || !win32.isAbsolute(workspace)) {
+      throw new WorkspacePrepareError("workspace_prepare_error", "invalid_repository_request");
+    }
+    const reported = (await git(workspace, ["rev-parse", "--show-toplevel"])).trim();
+    if (!win32.isAbsolute(reported)) throw new WorkspacePrepareError("workspace_prepare_error", "invalid_repository_root");
+    let repositoryRoot;
+    try { repositoryRoot = await realpathPath(reported); } catch {
+      throw new WorkspacePrepareError("workspace_prepare_error", "repository_root_unavailable");
+    }
+    if (!win32.isAbsolute(repositoryRoot) || !containedOrEqual(repositoryRoot, workspace)) {
+      throw new WorkspacePrepareError("workspace_prepare_error", "workspace_outside_repository");
+    }
+    return Object.freeze({ repositoryRoot });
   }
 
   async function collectChanges(workspace) {
@@ -127,5 +149,5 @@ export function createWorkspaceManager({
     return files;
   }
 
-  return Object.freeze({ prepare, collectChanges });
+  return Object.freeze({ resolveRepository, prepare, collectChanges });
 }

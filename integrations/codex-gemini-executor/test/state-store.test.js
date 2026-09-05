@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { createGeminiCompanionCore } from "../src/core.js";
+import { createCompanionRedactor } from "../src/redaction.js";
 import { createJobStateStore } from "../src/state-store.js";
+import { createWorkspaceLeaseManager } from "../src/workspace-lease.js";
 
 test("persists only minimal sanitized atomic state with revision guards", async () => {
   const files = new Map();
@@ -58,4 +61,22 @@ test("serializes concurrent writes so revisions remain monotonic", async () => {
   ]);
   assert.deepEqual([first.revision, second.revision], [1, 2]);
   assert.equal(JSON.parse(files.get("C:\\runtime\\jobs\\job_1.json")).revision, 2);
+});
+
+test("returns valid terminal records so restart status queries remain available", async () => {
+  const terminal = {
+    jobId: "job_done", status: "completed", revision: 4, workspace: "D:\\Repo",
+    worktreePath: null, sessionId: "thr_1", updatedAt: "old",
+  };
+  const store = createJobStateStore({
+    stateRoot: "C:\\runtime\\jobs", mkdirPath: async () => {}, writeFile: async () => {}, renamePath: async () => {},
+    readFile: async () => JSON.stringify(terminal), listDirectory: async () => ["job_done.json"], now: () => "now",
+  });
+  const recovered = await store.reconcile();
+  assert.deepEqual(recovered, [terminal]);
+  const restarted = createGeminiCompanionCore({
+    validateRequest: async () => ({}), prepareRuntime: async () => ({ run: async () => ({}) }),
+    workspaceLeases: createWorkspaceLeaseManager(), redactor: createCompanionRedactor(), initialStatuses: recovered,
+  });
+  assert.deepEqual(restarted.getGeminiStatus("job_done"), terminal);
 });

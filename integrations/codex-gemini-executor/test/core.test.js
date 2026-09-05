@@ -797,3 +797,44 @@ test("loads only terminal recovered statuses for on-demand inspection", () => {
   });
   assert.deepEqual(core.getGeminiStatus("job_recovered"), recovered);
 });
+
+test("locks writers by canonical Git repository rather than selected subdirectory", async () => {
+  const pending = deferred();
+  let nextId = 0;
+  const core = createGeminiCompanionCore({
+    validateRequest: async (request) => ({ ...request, effort: "medium", access: "workspace-write", timeoutMinutes: 30 }),
+    prepareRuntime: async ({ jobId }) => ({
+      compatibility: { status: "compatible", warnings: [] },
+      run: jobId === "job_1" ? () => pending.promise : async () => ({ finalAnswer: "unexpected", filesChanged: [], tests: [] }),
+      dispose: async () => {},
+    }),
+    workspaceLeases: createWorkspaceLeaseManager(),
+    workspaceManager: {
+      resolveRepository: async () => ({ repositoryRoot: "D:\\Repo" }),
+      prepare: async (_request, jobId) => ({ executionWorkspace: `C:\\jobs\\${jobId}`, worktreePath: `C:\\jobs\\${jobId}`, head: "a".repeat(40) }),
+    },
+    redactor: createCompanionRedactor(), generateJobId: () => `job_${++nextId}`,
+  });
+  const first = core.runGeminiTask({ task: "one", workspace: "D:\\Repo" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = await core.runGeminiTask({ task: "two", workspace: "D:\\Repo\\packages\\app" });
+  assert.equal(second.status, "failed");
+  assert.equal(second.error.category, "workspace_locked");
+  pending.resolve({ finalAnswer: "done", filesChanged: [], tests: [] });
+  assert.equal((await first).status, "completed");
+});
+
+test("cancels a failed active turn before disposing its runtime", async () => {
+  const calls = [];
+  const failure = Object.assign(new Error("approval failed"), { code: "app_server_approval_error" });
+  const core = lifecycleCore({
+    createRuntime: async () => ({
+      run: async () => { throw failure; },
+      cancel: async () => calls.push("cancel"),
+      dispose: async () => calls.push("dispose"),
+    }),
+    generateJobId: () => "job_approval_cleanup",
+  });
+  assert.equal((await core.runGeminiTask(baseRequest)).status, "failed");
+  assert.deepEqual(calls, ["cancel", "dispose"]);
+});

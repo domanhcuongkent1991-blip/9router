@@ -106,7 +106,10 @@ export function createJobStateStore({ stateRoot, mkdirPath, writeFile, renamePat
       } catch { continue; }
       if (record?.jobId !== match[1] || !STATUSES.has(record?.status) || !Number.isSafeInteger(record?.revision)) continue;
       revisions.set(record.jobId, record.revision);
-      if (TERMINAL.has(record.status)) continue;
+      if (TERMINAL.has(record.status)) {
+        recovered.push(minimal(record, record.revision, typeof record.updatedAt === "string" ? record.updatedAt : "unknown"));
+        continue;
+      }
       recovered.push(await persist({
         jobId: record.jobId,
         status: "failed",

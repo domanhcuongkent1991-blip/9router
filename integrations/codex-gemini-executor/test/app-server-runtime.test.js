@@ -13,7 +13,7 @@ function fakeChild() {
   return child;
 }
 
-function protocolHarness(child) {
+function protocolHarness(child, { onTurnStart } = {}) {
   const frames = [];
   let input = "";
   child.stdin.on("data", (chunk) => {
@@ -33,6 +33,10 @@ function protocolHarness(child) {
         "turn/start": { turn: { id: "turn_1", status: "inProgress" } },
         "turn/interrupt": {},
       };
+      if (frame.method === "turn/start" && onTurnStart) {
+        onTurnStart(frame, results[frame.method]);
+        continue;
+      }
       queueMicrotask(() => child.stdout.write(`${JSON.stringify({ id: frame.id, result: results[frame.method] })}\n`));
     }
   });
@@ -46,7 +50,7 @@ function options(child, overrides = {}) {
     workingDirectory: "D:\\Repo",
     environment: { PATH: "fixed" },
     spawnProcess: () => child,
-    observeExecutable: async () => ({ version: "2.0.0", executableSha256: "a".repeat(64) }),
+    observeExecutable: async () => ({ executablePath: "C:\\CodexDesktop\\codex.exe", version: "2.0.0", executableSha256: "a".repeat(64) }),
     baseline: { version: "1.0.0", executableSha256: "b".repeat(64) },
     clientInfo: { name: "nine_router_gemini", title: "9Router Gemini", version: "0.1.0" },
     schemaQualification: { schemaSubsetCompatible: true, methods: Object.fromEntries(APP_SERVER_REQUIRED_METHODS.map((name) => [name, true])) },
@@ -106,4 +110,72 @@ test("malformed capabilities fail before the App Server child is launched", asyn
     schemaQualification: { schemaSubsetCompatible: false, methods: {} },
   })), (error) => error.code === "app_server_incompatible" && error.userMessage === "Codex version chưa được hỗ trợ");
   assert.equal(spawned, 0);
+});
+
+test("fails closed when an early turn event disagrees with the turn/start response", async () => {
+  const child = fakeChild();
+  protocolHarness(child, {
+    onTurnStart: (frame, result) => {
+      child.stdout.write(`${JSON.stringify({ method: "turn/started", params: {
+        threadId: "thr_1", turn: { id: "turn_A", status: "inProgress", items: [] },
+      } })}\n`);
+      queueMicrotask(() => {
+        child.stdout.write(`${JSON.stringify({ id: frame.id, result: { ...result, turn: { ...result.turn, id: "turn_B" } } })}\n`);
+        queueMicrotask(() => child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: {
+          threadId: "thr_1", turn: { id: "turn_B", status: "completed", items: [] },
+        } })}\n`));
+      });
+    },
+  });
+  const runtime = await prepareAppServerRuntime(options(child));
+  await assert.rejects(runtime.run({
+    request: { task: "inspect", effort: "medium", access: "read-only" },
+    executionWorkspace: "D:\\Repo", onEvent: async () => {}, requestDecision: async () => "accept",
+  }), (error) => error.code === "app_server_incompatible" && error.details.reason === "turn_start_mismatch");
+  await runtime.dispose().catch(() => {});
+});
+
+test("sanitizes split-secret deltas before retaining the final answer", async () => {
+  const child = fakeChild(); protocolHarness(child);
+  const secret = "split-secret-value";
+  const runtime = await prepareAppServerRuntime(options(child, {
+    sanitizeForDisplay: (value) => value.replaceAll(secret, "[REDACTED]"),
+  }));
+  const running = runtime.run({
+    request: { task: "inspect", effort: "medium", access: "read-only" }, executionWorkspace: "D:\\Repo",
+    onEvent: async () => {}, requestDecision: async () => "accept",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  for (const delta of ["split-secret-", "value"]) {
+    child.stdout.write(`${JSON.stringify({ method: "item/agentMessage/delta", params: {
+      threadId: "thr_1", turnId: "turn_1", itemId: "item_1", delta,
+    } })}\n`);
+  }
+  child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: {
+    threadId: "thr_1", turn: { id: "turn_1", status: "completed", items: [] },
+  } })}\n`);
+  const result = await running;
+  assert.equal(result.finalAnswer, "[REDACTED]");
+  assert.equal(JSON.stringify(result).includes(secret), false);
+  await runtime.dispose();
+});
+
+test("generates schema and launches from the exact canonical observed executable", async () => {
+  const child = fakeChild(); protocolHarness(child);
+  const launches = [];
+  const schemaObservations = [];
+  const canonical = "C:\\CodexDesktop\\real\\codex.exe";
+  const runtime = await prepareAppServerRuntime(options(child, {
+    executablePath: "C:\\CodexDesktop\\alias\\codex.exe",
+    observeExecutable: async () => ({ executablePath: canonical, version: "2.0.0", executableSha256: "a".repeat(64) }),
+    loadSchemaQualification: async (observation) => {
+      schemaObservations.push(observation.executablePath);
+      return options(child).schemaQualification;
+    },
+    schemaQualification: undefined,
+    spawnProcess: (file) => { launches.push(file); return child; },
+  }));
+  assert.deepEqual(schemaObservations, [canonical]);
+  assert.deepEqual(launches, [canonical]);
+  await runtime.dispose();
 });

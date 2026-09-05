@@ -494,10 +494,16 @@ export function createGeminiCompanionCore({
       } else {
         compatibility = await awaitInterruptible(job, () => compatibilityAdapter.check());
       }
+      const repository = job.request.access === "workspace-write" && typeof workspaceManager?.resolveRepository === "function"
+        ? await awaitInterruptible(job, () => workspaceManager.resolveRepository(job.request))
+        : null;
       if (job.request.access === "workspace-write") {
         job.lease = await awaitInterruptible(
           job,
-          () => workspaceLeases.acquire(job.request),
+          () => workspaceLeases.acquire({
+            ...job.request,
+            workspace: repository?.repositoryRoot ?? job.request.workspace,
+          }),
           { onLateValue: (lateLease) => releaseLease(lateLease) },
         );
       }
@@ -513,7 +519,7 @@ export function createGeminiCompanionCore({
         };
         workspace = await awaitInterruptible(
           job,
-          () => workspaceManager.prepare(job.request, jobId),
+          () => workspaceManager.prepare(job.request, jobId, repository),
           {
             onAbandon: () => { if (workspaceSetupLease) job.leaseReleaseDeferred = true; },
             onLateValue: finishAbandonedWorkspaceSetup,
@@ -598,7 +604,7 @@ export function createGeminiCompanionCore({
       terminalPatch = terminalPatchForError(job, error);
     }
 
-    const cleanupFailed = await cleanup(job, Boolean(job.stopCategory));
+    const cleanupFailed = await cleanup(job, terminalPatch.status !== "completed");
     if (cleanupFailed && terminalPatch.status === "completed") {
       terminalPatch = { status: "failed", error: { category: "protocol_error" }, output: job.output };
     }

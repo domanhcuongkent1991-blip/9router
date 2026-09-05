@@ -129,9 +129,9 @@ export async function createInstalledGeminiCompanion({ environment = process.env
       }),
       baseline: config.baseline,
       clientInfo: { name: "nine_router_gemini", title: "9Router Gemini", version: "0.1.0" },
-      loadSchemaQualification: async () => {
+      loadSchemaQualification: async (observation) => {
         await fsApi.mkdirPath(schemaDirectory, { recursive: true });
-        await generateStableSchemaBundle({ executablePath: config.executablePath, outputDirectory: schemaDirectory, spawnProcess });
+        await generateStableSchemaBundle({ executablePath: observation.executablePath, outputDirectory: schemaDirectory, spawnProcess });
         return readGeneratedSchemas(schemaDirectory, {
           readDirectory: fsApi.listDirectory,
           readSchemaFile: fsApi.readFile,
