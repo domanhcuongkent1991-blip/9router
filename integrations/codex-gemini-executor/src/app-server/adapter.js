@@ -13,10 +13,15 @@ export function createAppServerCompatibilityAdapter({ baseline, clientInfo, obse
         observation = await observeExecutable();
         stage = "initialize";
         const handshake = await initialize({ clientInfo, capabilities: { experimentalApi: false } });
+        if (handshake?.ok !== true) {
+          throw new AppServerCompatibilityError({ observedVersion: observation?.version ?? "unknown", handshakeCompatible: false, schemaSubsetCompatible: false, missingCapabilities: [] });
+        }
         stage = "probe";
         const probe = await probeRequiredContract();
         const result = assessAppServerCompatibility({ observation, baseline, handshake, schemaSubsetCompatible: probe.schemaSubsetCompatible, methods: probe.methods });
-        for (const warning of result.warnings) onWarning(warning);
+        for (const warning of result.warnings) {
+          try { onWarning(warning); } catch { /* warnings are non-gating */ }
+        }
         return result;
       } catch (error) { throw normalizeFailure(error, stage, observation?.version); }
     },

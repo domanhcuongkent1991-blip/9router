@@ -37,3 +37,20 @@ test("normalizes transport failures without exposing their message", async () =>
   const adapter = createAppServerCompatibilityAdapter(options({ initialize: async () => { throw new Error("credential-like transport detail"); } }));
   await assert.rejects(() => adapter.check(), (error) => error.code === "app_server_incompatible" && error.details.stage === "initialize" && !JSON.stringify(error.details).includes("credential-like"));
 });
+
+test("does not probe after a failed handshake", async () => {
+  let probeCalls = 0;
+  const adapter = createAppServerCompatibilityAdapter(options({
+    initialize: async () => ({ ok: false }),
+    probeRequiredContract: async () => { probeCalls += 1; return { schemaSubsetCompatible: true, methods: methods() }; },
+  }));
+  await assert.rejects(() => adapter.check(), { code: "app_server_incompatible" });
+  assert.equal(probeCalls, 0);
+});
+
+test("does not let warning delivery block compatible execution", async () => {
+  const adapter = createAppServerCompatibilityAdapter(options({ onWarning: () => { throw new Error("warning sink detail"); } }));
+  const result = await adapter.check();
+  assert.equal(result.status, "compatible");
+  assert.deepEqual(result.warnings.map((warning) => warning.code), ["codex_version_changed", "codex_executable_changed"]);
+});
