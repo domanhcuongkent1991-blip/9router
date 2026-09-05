@@ -77,13 +77,35 @@ function generatedSchema({ includeInterrupt = true, includeCompleted = true } = 
     "turn/start": "#/definitions/TurnStartParams",
     ...(includeInterrupt ? { "turn/interrupt": "#/definitions/TurnInterruptParams" } : {}),
   };
+  const objectDefinition = (properties, required = []) => ({ type: "object", properties, required });
   return {
     definitions: {
+      RequestId: { oneOf: [{ type: "integer" }, { type: "string" }] },
+      InitializeParams: objectDefinition({ clientInfo: { type: "object" }, capabilities: { type: "object" } }, ["clientInfo", "capabilities"]),
+      ModelListParams: objectDefinition({ limit: { type: "integer" }, includeHidden: { type: "boolean" } }),
+      ThreadStartParams: objectDefinition({
+        cwd: { type: "string" }, model: { type: "string" }, modelProvider: { type: "string" },
+        sandbox: { type: "string" }, approvalPolicy: { type: "string" }, ephemeral: { type: "boolean" },
+      }),
+      ThreadResumeParams: objectDefinition({
+        threadId: { type: "string" }, cwd: { type: "string" }, model: { type: "string" },
+        modelProvider: { type: "string" }, sandbox: { type: "string" }, approvalPolicy: { type: "string" },
+      }, ["threadId"]),
+      TurnStartParams: objectDefinition({
+        threadId: { type: "string" }, input: { type: "array" }, model: { type: "string" }, effort: { type: "string" },
+      }, ["threadId", "input"]),
+      TurnInterruptParams: objectDefinition({ threadId: { type: "string" }, turnId: { type: "string" } }, ["threadId", "turnId"]),
+      TurnStartedNotification: objectDefinition({ threadId: { type: "string" }, turn: { type: "object" } }, ["threadId", "turn"]),
+      AgentMessageDeltaNotification: objectDefinition({
+        threadId: { type: "string" }, turnId: { type: "string" }, itemId: { type: "string" }, delta: { type: "string" },
+      }, ["threadId", "turnId", "itemId", "delta"]),
+      TurnCompletedNotification: objectDefinition({ threadId: { type: "string" }, turn: { type: "object" } }, ["threadId", "turn"]),
       ClientRequest: {
         oneOf: Object.entries(refs).map(([method, ref]) => ({
           required: ["id", "method", "params"],
           properties: {
-            method: { enum: [method] },
+            id: { $ref: "#/definitions/RequestId" },
+            method: { type: "string", enum: [method] },
             params: { $ref: ref },
           },
         })),
@@ -95,7 +117,7 @@ function generatedSchema({ includeInterrupt = true, includeCompleted = true } = 
           ...(includeCompleted ? [["turn/completed", "#/definitions/TurnCompletedNotification"]] : []),
         ].map(([method, ref]) => ({
           required: ["method", "params"],
-          properties: { method: { enum: [method] }, params: { $ref: ref } },
+          properties: { method: { type: "string", enum: [method] }, params: { $ref: ref } },
         })),
       },
     },
@@ -103,15 +125,23 @@ function generatedSchema({ includeInterrupt = true, includeCompleted = true } = 
 }
 
 function generatedApprovalSchema({ includeFileChange = true } = {}) {
+  const approvalDefinition = () => ({
+    type: "object",
+    properties: { threadId: { type: "string" }, turnId: { type: "string" }, itemId: { type: "string" } },
+    required: ["threadId", "turnId", "itemId"],
+  });
   return {
     definitions: {
+      RequestId: { oneOf: [{ type: "integer" }, { type: "string" }] },
+      CommandExecutionRequestApprovalParams: approvalDefinition(),
+      FileChangeRequestApprovalParams: approvalDefinition(),
       ServerRequest: {
         oneOf: [
           ["item/commandExecution/requestApproval", "#/definitions/CommandExecutionRequestApprovalParams"],
           ...(includeFileChange ? [["item/fileChange/requestApproval", "#/definitions/FileChangeRequestApprovalParams"]] : []),
         ].map(([method, ref]) => ({
           required: ["id", "method", "params"],
-          properties: { id: { $ref: "#/definitions/RequestId" }, method: { enum: [method] }, params: { $ref: ref } },
+          properties: { id: { $ref: "#/definitions/RequestId" }, method: { type: "string", enum: [method] }, params: { $ref: ref } },
         })),
       },
     },

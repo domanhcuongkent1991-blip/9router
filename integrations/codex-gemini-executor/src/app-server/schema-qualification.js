@@ -20,6 +20,80 @@ const EXPECTED_APPROVAL_REFS = Object.freeze({
   "item/fileChange/requestApproval": "#/definitions/FileChangeRequestApprovalParams",
 });
 
+const REQUEST_ID_REF = "#/definitions/RequestId";
+
+const PARAMETER_CONTRACTS = Object.freeze({
+  "#/definitions/InitializeParams": {
+    direction: "outgoing",
+    fields: { clientInfo: "object", capabilities: "object" },
+    required: ["clientInfo", "capabilities"],
+  },
+  "#/definitions/ModelListParams": {
+    direction: "outgoing",
+    fields: { limit: "integer", includeHidden: "boolean" },
+    required: [],
+  },
+  "#/definitions/ThreadStartParams": {
+    direction: "outgoing",
+    fields: {
+      cwd: "string",
+      model: "string",
+      modelProvider: "string",
+      sandbox: "string",
+      approvalPolicy: "string",
+      ephemeral: "boolean",
+    },
+    required: [],
+  },
+  "#/definitions/ThreadResumeParams": {
+    direction: "outgoing",
+    fields: {
+      threadId: "string",
+      cwd: "string",
+      model: "string",
+      modelProvider: "string",
+      sandbox: "string",
+      approvalPolicy: "string",
+    },
+    required: ["threadId"],
+  },
+  "#/definitions/TurnStartParams": {
+    direction: "outgoing",
+    fields: { threadId: "string", input: "array", model: "string", effort: "string" },
+    required: ["threadId", "input"],
+  },
+  "#/definitions/TurnInterruptParams": {
+    direction: "outgoing",
+    fields: { threadId: "string", turnId: "string" },
+    required: ["threadId", "turnId"],
+  },
+  "#/definitions/TurnStartedNotification": {
+    direction: "incoming",
+    fields: { threadId: "string", turn: "object" },
+    required: ["threadId", "turn"],
+  },
+  "#/definitions/AgentMessageDeltaNotification": {
+    direction: "incoming",
+    fields: { threadId: "string", turnId: "string", itemId: "string", delta: "string" },
+    required: ["threadId", "turnId", "itemId", "delta"],
+  },
+  "#/definitions/TurnCompletedNotification": {
+    direction: "incoming",
+    fields: { threadId: "string", turn: "object" },
+    required: ["threadId", "turn"],
+  },
+  "#/definitions/CommandExecutionRequestApprovalParams": {
+    direction: "incoming",
+    fields: { threadId: "string", turnId: "string", itemId: "string" },
+    required: ["threadId", "turnId", "itemId"],
+  },
+  "#/definitions/FileChangeRequestApprovalParams": {
+    direction: "incoming",
+    fields: { threadId: "string", turnId: "string", itemId: "string" },
+    required: ["threadId", "turnId", "itemId"],
+  },
+});
+
 export class AppServerSchemaError extends Error {
   constructor(reason) {
     super("App Server schema qualification failure");
@@ -40,19 +114,105 @@ function variantMethod(variant) {
     : undefined;
 }
 
-function isCompatibleVariant(variant, method, expectedRef, requiresId) {
+function definitionName(ref) {
+  const prefix = "#/definitions/";
+  if (typeof ref !== "string" || !ref.startsWith(prefix)) return undefined;
+  const name = ref.slice(prefix.length);
+  return name.length > 0 && !name.includes("/") ? name : undefined;
+}
+
+function resolveDefinition(definitions, ref) {
+  const name = definitionName(ref);
+  return name === undefined ? undefined : definitions[name];
+}
+
+function schemaKinds(schema, definitions, seen = new Set()) {
+  if (!isObject(schema)) return new Set();
+  if (typeof schema.$ref === "string") {
+    if (seen.has(schema.$ref)) return new Set();
+    const target = resolveDefinition(definitions, schema.$ref);
+    if (!isObject(target)) return new Set();
+    const nextSeen = new Set(seen);
+    nextSeen.add(schema.$ref);
+    return schemaKinds(target, definitions, nextSeen);
+  }
+
+  const kinds = new Set();
+  const declaredTypes = Array.isArray(schema.type) ? schema.type : [schema.type];
+  for (const type of declaredTypes) {
+    if (typeof type === "string") kinds.add(type);
+  }
+  for (const keyword of ["anyOf", "oneOf", "allOf"]) {
+    if (!Array.isArray(schema[keyword])) continue;
+    for (const branch of schema[keyword]) {
+      for (const kind of schemaKinds(branch, definitions, seen)) kinds.add(kind);
+    }
+  }
+  return kinds;
+}
+
+function validRequired(required) {
+  return required === undefined
+    || (Array.isArray(required)
+      && required.every((field) => typeof field === "string")
+      && new Set(required).size === required.length);
+}
+
+function validRequestId(definitions) {
+  const requestId = resolveDefinition(definitions, REQUEST_ID_REF);
+  if (!isObject(requestId)) return false;
+  const kinds = schemaKinds(requestId, definitions);
+  return kinds.size > 0
+    && [...kinds].every((kind) => kind === "integer" || kind === "string");
+}
+
+function fieldKindCompatible(schema, expectedKind, definitions, direction) {
+  const kinds = schemaKinds(schema, definitions);
+  if (!kinds.has(expectedKind)) return false;
+  return direction === "outgoing" || [...kinds].every((kind) => kind === expectedKind);
+}
+
+function definitionCompatible(definitions, expectedRef) {
+  const contract = PARAMETER_CONTRACTS[expectedRef];
+  const definition = resolveDefinition(definitions, expectedRef);
+  if (!contract || !isObject(definition) || !isObject(definition.properties)) return false;
+  if (!validRequired(definition.required)) return false;
+  const definitionKinds = schemaKinds(definition, definitions);
+  if (definitionKinds.size !== 1 || !definitionKinds.has("object")) return false;
+
+  const required = definition.required ?? [];
+  if (!contract.required.every((field) => required.includes(field))) return false;
+  if (contract.direction === "outgoing"
+    && required.some((field) => !Object.hasOwn(contract.fields, field))) return false;
+
+  return Object.entries(contract.fields).every(([field, kind]) => (
+    Object.hasOwn(definition.properties, field)
+    && fieldKindCompatible(definition.properties[field], kind, definitions, contract.direction)
+    && (contract.direction === "outgoing" || required.includes(field))
+  ));
+}
+
+function isCompatibleVariant(variant, method, expectedRef, requiresId, definitions) {
   if (!isObject(variant) || !isObject(variant.properties)) return false;
   if (!Array.isArray(variant.required)) return false;
   const requiredFields = requiresId ? ["id", "method", "params"] : ["method", "params"];
   if (!requiredFields.every((name) => variant.required.includes(name))) return false;
+  if (variant.properties.method?.type !== "string") return false;
+  if (requiresId) {
+    if (variant.properties.id?.$ref !== REQUEST_ID_REF || !validRequestId(definitions)) return false;
+  } else if (Object.hasOwn(variant.properties, "id") || variant.required.includes("id")) {
+    return false;
+  }
   return variantMethod(variant) === method
-    && variant.properties.params?.$ref === expectedRef;
+    && variant.properties.params?.$ref === expectedRef
+    && definitionCompatible(definitions, expectedRef);
 }
 
-function qualifyVariants(variants, expectedRefs, { requiresId }) {
+function qualifyVariants(variants, expectedRefs, { requiresId, definitions }) {
   return Object.fromEntries(Object.entries(expectedRefs).map(([method, ref]) => {
     const matches = variants.filter((variant) => variantMethod(variant) === method);
-    return [method, matches.length === 1 && isCompatibleVariant(matches[0], method, ref, requiresId)];
+    return [method, matches.length === 1
+      && isCompatibleVariant(matches[0], method, ref, requiresId, definitions)];
   }));
 }
 
@@ -67,8 +227,15 @@ export function qualifyStableSchemaBundle(bundle) {
     throw new AppServerSchemaError("invalid_schema_structure");
   }
 
-  const clientCompatibility = qualifyVariants(clientVariants, EXPECTED_PARAMETER_REFS, { requiresId: true });
-  const notificationCompatibility = qualifyVariants(notificationVariants, EXPECTED_NOTIFICATION_REFS, { requiresId: false });
+  const definitions = bundle.definitions;
+  const clientCompatibility = qualifyVariants(clientVariants, EXPECTED_PARAMETER_REFS, {
+    requiresId: true,
+    definitions,
+  });
+  const notificationCompatibility = qualifyVariants(notificationVariants, EXPECTED_NOTIFICATION_REFS, {
+    requiresId: false,
+    definitions,
+  });
 
   const methods = Object.fromEntries(
     APP_SERVER_REQUIRED_METHODS.map((method) => [method, clientCompatibility[method] === true]),
@@ -84,7 +251,10 @@ export function qualifyApprovalSchemaBundle(bundle) {
   if (!isObject(bundle) || !Array.isArray(variants)) {
     throw new AppServerSchemaError("invalid_schema_structure");
   }
-  const serverRequests = qualifyVariants(variants, EXPECTED_APPROVAL_REFS, { requiresId: true });
+  const serverRequests = qualifyVariants(variants, EXPECTED_APPROVAL_REFS, {
+    requiresId: true,
+    definitions: bundle.definitions,
+  });
   return { schemaSubsetCompatible: allCompatible(serverRequests), serverRequests };
 }
 

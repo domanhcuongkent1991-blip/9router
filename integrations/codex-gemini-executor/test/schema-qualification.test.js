@@ -30,6 +30,83 @@ const expectedApprovalRefs = {
   "item/fileChange/requestApproval": "#/definitions/FileChangeRequestApprovalParams",
 };
 
+function objectDefinition(properties, required = []) {
+  return { type: "object", properties, required };
+}
+
+function stableDefinitions() {
+  return {
+    RequestId: { oneOf: [{ type: "integer" }, { type: "string" }] },
+    InitializeParams: objectDefinition({
+      clientInfo: { type: "object" },
+      capabilities: { type: "object" },
+    }, ["clientInfo", "capabilities"]),
+    ModelListParams: objectDefinition({
+      limit: { type: "integer" },
+      includeHidden: { type: "boolean" },
+    }),
+    ThreadStartParams: objectDefinition({
+      cwd: { type: "string" },
+      model: { type: "string" },
+      modelProvider: { type: "string" },
+      sandbox: { type: "string" },
+      approvalPolicy: { type: "string" },
+      ephemeral: { type: "boolean" },
+    }),
+    ThreadResumeParams: objectDefinition({
+      threadId: { type: "string" },
+      cwd: { type: "string" },
+      model: { type: "string" },
+      modelProvider: { type: "string" },
+      sandbox: { type: "string" },
+      approvalPolicy: { type: "string" },
+    }, ["threadId"]),
+    TurnStartParams: objectDefinition({
+      threadId: { type: "string" },
+      input: { type: "array" },
+      model: { type: "string" },
+      effort: { type: "string" },
+    }, ["threadId", "input"]),
+    TurnInterruptParams: objectDefinition({
+      threadId: { type: "string" },
+      turnId: { type: "string" },
+    }, ["threadId", "turnId"]),
+    TurnStartedNotification: objectDefinition({
+      threadId: { type: "string" },
+      turn: { type: "object" },
+    }, ["threadId", "turn"]),
+    AgentMessageDeltaNotification: objectDefinition({
+      threadId: { type: "string" },
+      turnId: { type: "string" },
+      itemId: { type: "string" },
+      delta: { type: "string" },
+    }, ["threadId", "turnId", "itemId", "delta"]),
+    TurnCompletedNotification: objectDefinition({
+      threadId: { type: "string" },
+      turn: { type: "object" },
+    }, ["threadId", "turn"]),
+  };
+}
+
+function approvalDefinitions() {
+  const approvalProperties = {
+    threadId: { type: "string" },
+    turnId: { type: "string" },
+    itemId: { type: "string" },
+  };
+  return {
+    RequestId: { oneOf: [{ type: "integer" }, { type: "string" }] },
+    CommandExecutionRequestApprovalParams: objectDefinition(
+      structuredClone(approvalProperties),
+      ["threadId", "turnId", "itemId"],
+    ),
+    FileChangeRequestApprovalParams: objectDefinition(
+      structuredClone(approvalProperties),
+      ["threadId", "turnId", "itemId"],
+    ),
+  };
+}
+
 function variant(method, ref, { request = false } = {}) {
   return {
     type: "object",
@@ -45,6 +122,7 @@ function variant(method, ref, { request = false } = {}) {
 function schema(methods = expectedRefs, notifications = expectedNotificationRefs) {
   return {
     definitions: {
+      ...stableDefinitions(),
       ClientRequest: {
         oneOf: Object.entries(methods).map(([method, ref]) => variant(method, ref, { request: true })),
       },
@@ -56,6 +134,7 @@ function schema(methods = expectedRefs, notifications = expectedNotificationRefs
 function approvalSchema(requests = expectedApprovalRefs) {
   return {
     definitions: {
+      ...approvalDefinitions(),
       ServerRequest: { oneOf: Object.entries(requests).map(([method, ref]) => variant(method, ref, { request: true })) },
     },
   };
@@ -74,6 +153,94 @@ test("allows additive unrelated request methods", () => {
     "account/read": "#/definitions/AccountReadParams",
   }));
   assert.equal(result.schemaSubsetCompatible, true);
+});
+
+test("rejects unresolved and malformed expected parameter definitions", () => {
+  const missing = schema();
+  delete missing.definitions.TurnStartParams;
+  assert.equal(qualifyStableSchemaBundle(missing).schemaSubsetCompatible, false);
+
+  const malformed = schema();
+  malformed.definitions.AgentMessageDeltaNotification = { description: "not an object schema" };
+  assert.equal(qualifyStableSchemaBundle(malformed).schemaSubsetCompatible, false);
+
+  const mixedTarget = schema();
+  mixedTarget.definitions.TurnStartParams.type = ["object", "string"];
+  assert.equal(qualifyStableSchemaBundle(mixedTarget).schemaSubsetCompatible, false);
+
+  const missingApproval = approvalSchema();
+  delete missingApproval.definitions.FileChangeRequestApprovalParams;
+  assert.equal(qualifyApprovalSchemaBundle(missingApproval).schemaSubsetCompatible, false);
+});
+
+test("rejects malformed request and notification envelopes", () => {
+  const wrongRequestIdRef = schema();
+  wrongRequestIdRef.definitions.ClientRequest.oneOf[0].properties.id.$ref = "#/definitions/OtherId";
+  assert.equal(qualifyStableSchemaBundle(wrongRequestIdRef).schemaSubsetCompatible, false);
+
+  const objectRequestId = schema();
+  objectRequestId.definitions.RequestId = { type: "object", properties: {} };
+  assert.equal(qualifyStableSchemaBundle(objectRequestId).schemaSubsetCompatible, false);
+
+  const objectApprovalRequestId = approvalSchema();
+  objectApprovalRequestId.definitions.RequestId = { type: "object", properties: {} };
+  assert.equal(qualifyApprovalSchemaBundle(objectApprovalRequestId).schemaSubsetCompatible, false);
+
+  const wrongApprovalIdRef = approvalSchema();
+  wrongApprovalIdRef.definitions.ServerRequest.oneOf[0].properties.id.$ref = "#/definitions/OtherId";
+  assert.equal(qualifyApprovalSchemaBundle(wrongApprovalIdRef).schemaSubsetCompatible, false);
+
+  const nonStringMethod = schema();
+  nonStringMethod.definitions.ClientRequest.oneOf[0].properties.method.type = "object";
+  assert.equal(qualifyStableSchemaBundle(nonStringMethod).schemaSubsetCompatible, false);
+
+  const notificationWithId = schema();
+  const notification = notificationWithId.definitions.ServerNotification.oneOf[0];
+  notification.properties.id = { $ref: "#/definitions/RequestId" };
+  notification.required.push("id");
+  assert.equal(qualifyStableSchemaBundle(notificationWithId).schemaSubsetCompatible, false);
+
+  const notificationDeclaringOptionalId = schema();
+  notificationDeclaringOptionalId.definitions.ServerNotification.oneOf[0].properties.id = {
+    $ref: "#/definitions/RequestId",
+  };
+  assert.equal(qualifyStableSchemaBundle(notificationDeclaringOptionalId).schemaSubsetCompatible, false);
+});
+
+test("rejects incompatible primitive and container kinds", () => {
+  const wrongInput = schema();
+  wrongInput.definitions.TurnStartParams.properties.input = { type: "object" };
+  assert.equal(qualifyStableSchemaBundle(wrongInput).schemaSubsetCompatible, false);
+
+  const wrongDelta = schema();
+  wrongDelta.definitions.AgentMessageDeltaNotification.properties.delta = { type: "object" };
+  assert.equal(qualifyStableSchemaBundle(wrongDelta).schemaSubsetCompatible, false);
+
+  const wrongApprovalId = approvalSchema();
+  wrongApprovalId.definitions.FileChangeRequestApprovalParams.properties.itemId = { type: "object" };
+  assert.equal(qualifyApprovalSchemaBundle(wrongApprovalId).schemaSubsetCompatible, false);
+});
+
+test("rejects removed consumed fields and newly required unsent request fields", () => {
+  const removedNotificationField = schema();
+  delete removedNotificationField.definitions.TurnCompletedNotification.properties.turn;
+  assert.equal(qualifyStableSchemaBundle(removedNotificationField).schemaSubsetCompatible, false);
+
+  const removedApprovalField = approvalSchema();
+  delete removedApprovalField.definitions.CommandExecutionRequestApprovalParams.properties.itemId;
+  assert.equal(qualifyApprovalSchemaBundle(removedApprovalField).schemaSubsetCompatible, false);
+
+  const newlyRequiredUnsent = schema();
+  newlyRequiredUnsent.definitions.ThreadStartParams.properties.futureRequired = { type: "string" };
+  newlyRequiredUnsent.definitions.ThreadStartParams.required.push("futureRequired");
+  assert.equal(qualifyStableSchemaBundle(newlyRequiredUnsent).schemaSubsetCompatible, false);
+});
+
+test("allows additive optional and unrelated definition fields", () => {
+  const additive = schema();
+  additive.definitions.ThreadStartParams.properties.futureOptional = { type: "string" };
+  additive.definitions.Unrelated = objectDefinition({ anything: { type: "number" } });
+  assert.equal(qualifyStableSchemaBundle(additive).schemaSubsetCompatible, true);
 });
 
 test("requires all consumed notification variants while preserving client method results", () => {
