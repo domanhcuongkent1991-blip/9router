@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, relative } from "node:path";
 
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 // CLI bundling needs workspace root so tracing includes hoisted node_modules (slim ~50MB).
@@ -7,6 +8,7 @@ const projectRoot = dirname(fileURLToPath(import.meta.url));
 const tracingRoot = process.env.NEXT_TRACING_ROOT_MODE === "workspace"
   ? join(projectRoot, "..")
   : projectRoot;
+const machineHomeTracePattern = `${relative(tracingRoot, homedir()).replaceAll("\\", "/")}/**`;
 const proxyClientMaxBodySize = process.env.NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE || "128mb";
 
 /** @type {import('next').NextConfig} */
@@ -40,7 +42,22 @@ const nextConfig = {
     // Tree-shake heavy barrel imports to cut compile + bundle size
     optimizePackageImports: ["@xyflow/react", "@dnd-kit/core", "@dnd-kit/sortable", "material-symbols", "marked"],
   },
-  webpack: (config, { isServer }) => {
+  webpack: (config, { dev, isServer, nextRuntime }) => {
+    if (isServer && !dev && nextRuntime === "nodejs") {
+      // Next's tracer otherwise expands runtime-only CLI/config paths into the build
+      // machine's home directory, causing multi-GB manifests and OOM failures.
+      const tracePlugin = config.plugins.find(
+        (plugin) => plugin?.constructor?.name === "TraceEntryPointsPlugin",
+      );
+      if (!Array.isArray(tracePlugin?.traceIgnores)) {
+        // This is a deliberately small compatibility seam around a private Next hook.
+        // Fail early after a Next upgrade instead of silently packaging host data again.
+        throw new Error(
+          "Unsupported Next.js output tracing: TraceEntryPointsPlugin compatibility hook is unavailable.",
+        );
+      }
+      tracePlugin.traceIgnores.push(machineHomeTracePattern, "**/WindowsApps/**");
+    }
     // Ignore fs/path modules in browser bundle
     if (!isServer) {
       config.resolve.fallback = {
