@@ -22,6 +22,8 @@ import { createWorkspaceManager } from "./workspace.js";
 
 const RUNTIME_ROOT = "C:\\Users\\Admin\\Documents\\Codex\\9router-gemini-runtime";
 const WORKTREE_ROOT = "C:\\tmp\\CodexScratch\\9router-gemini-jobs";
+const APP_SERVER_SCHEMA_BUNDLE = "codex_app_server_protocol.schemas.json";
+const MAX_GENERATED_SCHEMA_BYTES = 4 * 1024 * 1024;
 const SHA256 = /^[a-f0-9]{64}$/u;
 const execFile = promisify(execFileCallback);
 
@@ -68,25 +70,25 @@ function childEnvironment(environment, apiKey) {
   return output;
 }
 
-async function readGeneratedSchemas(directory, { readDirectory = readdir, readSchemaFile = readFile } = {}) {
-  const entries = await readDirectory(directory, { withFileTypes: true, recursive: true });
-  const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json"));
-  if (files.length === 0 || files.length > 64) throw new InstallationConfigError("invalid_generated_schema_set");
-  let stable;
-  let approvals;
-  for (const entry of files) {
-    const parent = entry.parentPath ?? entry.path ?? directory;
-    const raw = await readSchemaFile(win32.join(parent, entry.name), "utf8");
-    if (Buffer.byteLength(raw, "utf8") > 4 * 1024 * 1024) throw new InstallationConfigError("generated_schema_too_large");
-    let parsed;
-    try { parsed = JSON.parse(raw); } catch { throw new InstallationConfigError("invalid_generated_schema_json"); }
-    if (parsed?.definitions?.ClientRequest) stable = parsed;
-    if (parsed?.definitions?.ServerRequest) approvals = parsed;
+export async function readGeneratedSchemas(directory, { readSchemaFile = readFile } = {}) {
+  let raw;
+  try {
+    raw = await readSchemaFile(win32.join(directory, APP_SERVER_SCHEMA_BUNDLE), "utf8");
+  } catch {
+    throw new InstallationConfigError("required_generated_schema_missing");
   }
-  if (!stable || !approvals) throw new InstallationConfigError("required_generated_schema_missing");
+  if (typeof raw !== "string") throw new InstallationConfigError("invalid_generated_schema_json");
+  if (Buffer.byteLength(raw, "utf8") > MAX_GENERATED_SCHEMA_BYTES) {
+    throw new InstallationConfigError("generated_schema_too_large");
+  }
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { throw new InstallationConfigError("invalid_generated_schema_json"); }
+  if (!parsed?.definitions?.ClientRequest || !parsed?.definitions?.ServerRequest) {
+    throw new InstallationConfigError("required_generated_schema_missing");
+  }
   return combineSchemaQualifications(
-    qualifyStableSchemaBundle(stable),
-    qualifyApprovalSchemaBundle(approvals),
+    qualifyStableSchemaBundle(parsed),
+    qualifyApprovalSchemaBundle(parsed),
   );
 }
 
@@ -133,7 +135,6 @@ export async function createInstalledGeminiCompanion({ environment = process.env
         await fsApi.mkdirPath(schemaDirectory, { recursive: true });
         await generateStableSchemaBundle({ executablePath: observation.executablePath, outputDirectory: schemaDirectory, spawnProcess });
         return readGeneratedSchemas(schemaDirectory, {
-          readDirectory: fsApi.listDirectory,
           readSchemaFile: fsApi.readFile,
         });
       },
