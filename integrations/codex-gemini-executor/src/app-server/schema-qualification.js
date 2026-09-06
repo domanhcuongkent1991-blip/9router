@@ -182,9 +182,9 @@ function fieldKindCompatible(schema, expectedKind, definitions, direction) {
   return direction === "outgoing" || [...kinds].every((kind) => kind === expectedKind);
 }
 
-function definitionCompatible(definitions, expectedRef) {
+function definitionCompatible(definitions, actualRef, expectedRef) {
   const contract = PARAMETER_CONTRACTS[expectedRef];
-  const definition = resolveDefinition(definitions, expectedRef);
+  const definition = resolveDefinition(definitions, actualRef);
   if (!contract || !isObject(definition) || !isObject(definition.properties)) return false;
   if (!validRequired(definition.required)) return false;
   const definitionKinds = schemaKinds(definition, definitions);
@@ -214,9 +214,9 @@ function isCompatibleVariant(variant, method, expectedRef, requiresId, definitio
   } else if (Object.hasOwn(variant.properties, "id") || variant.required.includes("id")) {
     return false;
   }
+  const actualRef = variant.properties.params?.$ref;
   return variantMethod(variant) === method
-    && variant.properties.params?.$ref === expectedRef
-    && definitionCompatible(definitions, expectedRef);
+    && definitionCompatible(definitions, actualRef, expectedRef);
 }
 
 function qualifyVariants(variants, expectedRefs, { requiresId, definitions }) {

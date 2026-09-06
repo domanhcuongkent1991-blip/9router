@@ -168,6 +168,32 @@ test("allows additive unrelated request methods", () => {
   assert.equal(result.schemaSubsetCompatible, true);
 });
 
+test("allows versioned local definition refs when the consumed shapes remain compatible", () => {
+  const bundle = schema();
+  bundle.definitions.v2 = {};
+  const versionedDefinitionNames = new Set([
+    "RequestId",
+    ...Object.values(expectedRefs).map((ref) => ref.split("/").at(-1)),
+    ...Object.values(expectedNotificationRefs).map((ref) => ref.split("/").at(-1)),
+  ]);
+  for (const name of versionedDefinitionNames) {
+    bundle.definitions.v2[name] = bundle.definitions[name];
+    delete bundle.definitions[name];
+  }
+  for (const variant of [
+    ...bundle.definitions.ClientRequest.oneOf,
+    ...bundle.definitions.ServerNotification.oneOf,
+  ]) {
+    if (variant.properties.id) variant.properties.id.$ref = "#/definitions/v2/RequestId";
+    variant.properties.params.$ref = variant.properties.params.$ref.replace(
+      "#/definitions/",
+      "#/definitions/v2/",
+    );
+  }
+
+  assert.equal(qualifyStableSchemaBundle(bundle).schemaSubsetCompatible, true);
+});
+
 test("rejects unresolved and malformed expected parameter definitions", () => {
   const missing = schema();
   delete missing.definitions.TurnStartParams;
