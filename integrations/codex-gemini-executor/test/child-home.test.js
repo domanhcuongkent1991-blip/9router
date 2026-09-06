@@ -19,6 +19,7 @@ test("writes fixed isolated config atomically without credentials or parent capa
   assert.equal(writes[0][1].includes("SECRET"), false);
   assert.match(writes[0][1], /env_key = "NINEROUTER_API_KEY"/u);
   assert.match(writes[0][1], /wire_api = "responses"/u);
+  assert.match(writes[0][1], /^web_search = "disabled"$/mu);
   assert.match(writes[0][1], /sandbox_mode = "read-only"/u);
   assert.match(writes[0][1], /network_access = false/u);
   assert.match(writes[0][1], /requires_openai_auth = false/u);

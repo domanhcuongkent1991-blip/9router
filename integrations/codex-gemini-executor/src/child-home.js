@@ -9,6 +9,7 @@ function configFor(model) {
 model_provider = "nine_router"
 approval_policy = "on-request"
 sandbox_mode = "read-only"
+web_search = "disabled"
 
 [sandbox_workspace_write]
 network_access = false
