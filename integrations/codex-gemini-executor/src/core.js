@@ -215,6 +215,7 @@ export function createGeminiCompanionCore({
     } catch (error) {
       if (error instanceof StopRequested) {
         abandoned = true;
+        if (onLateValue || onLateError || onAbandon) job.cleanupUncertain = true;
         onAbandon?.();
       }
       throw error;
@@ -305,6 +306,7 @@ export function createGeminiCompanionCore({
 
   function armIdleTimer(job) {
     clearTimeout(job.idleTimer);
+    if (job.activeExecutions?.size > 0) return;
     const hardDuration = job.request.timeoutMinutes * millisecondsPerMinute;
     job.idleTimer = setTimeout(() => requestStop(job, "timeout"), Math.min(idleTimeoutMs, hardDuration));
     job.idleTimer.unref?.();
@@ -377,6 +379,8 @@ export function createGeminiCompanionCore({
 
   async function onRuntimeEvent(job, event) {
     if (TERMINAL_STATUSES.has(job.snapshot.status) || job.stopCategory) return;
+    if (event?.type === "execution_started") job.activeExecutions.add(event.itemId);
+    if (event?.type === "execution_completed") job.activeExecutions.delete(event.itemId);
     armIdleTimer(job);
     if (event?.type === "assistant_delta" && typeof event.text === "string") {
       const remaining = maxAccumulatedOutputBytes - byteLength(job.output);
@@ -434,6 +438,7 @@ export function createGeminiCompanionCore({
     job.runtime = null;
     job.lease = null;
     job.output = "";
+    job.detachAbort?.();
   }
 
   async function runGeminiTask(rawRequest, executionHooks = {}) {
@@ -462,10 +467,18 @@ export function createGeminiCompanionCore({
       stopCategory: null,
       persistenceFailed: false,
       leaseReleaseDeferred: false,
+      cleanupUncertain: false,
+      activeExecutions: new Set(),
     };
     // The rejection is observed here as well as by lifecycle races so idle jobs never emit an unhandled rejection.
     job.stopSignal.promise.catch(() => {});
     jobs.set(jobId, job);
+    const hostAbort = () => requestStop(job, "cancelled");
+    if (executionHooks.signal) {
+      executionHooks.signal.addEventListener("abort", hostAbort, { once: true });
+      job.detachAbort = () => executionHooks.signal.removeEventListener("abort", hostAbort);
+      if (executionHooks.signal.aborted) hostAbort();
+    }
 
     let terminalPatch;
     try {
@@ -535,6 +548,7 @@ export function createGeminiCompanionCore({
       if (typeof workspace?.executionWorkspace !== "string") {
         throw new CompanionJobError("protocol_error", "invalid_execution_workspace");
       }
+      await executionHooks.onWorkspacePrepared?.(workspace, job.request);
       if (workspace.worktreePath) {
         await publish(job, {
           status: "starting",
@@ -593,6 +607,7 @@ export function createGeminiCompanionCore({
       if (workspace.worktreePath && typeof workspaceManager?.collectChanges === "function") {
         result.filesChanged = await awaitInterruptible(job, () => workspaceManager.collectChanges(workspace));
       }
+      await awaitInterruptible(job, () => executionHooks.onResult?.(result), { onAbandon: () => {} });
       terminalPatch = {
         status: "completed",
         ...(Object.hasOwn(result, "sessionId") ? { sessionId: result.sessionId } : {}),
@@ -619,6 +634,7 @@ export function createGeminiCompanionCore({
       }
     }
 
+    try { await executionHooks.onCleanup?.(!cleanupFailed && !job.cleanupUncertain && !job.persistenceFailed); } catch { job.cleanupUncertain = true; }
     const result = clone(job.snapshot);
     job.done.resolve(result);
     scrubTerminalReferences(job);

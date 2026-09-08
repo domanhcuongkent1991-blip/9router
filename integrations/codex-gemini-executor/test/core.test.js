@@ -9,6 +9,48 @@ import { createWorkspaceLeaseManager } from "../src/workspace-lease.js";
 const SECRET = "sentinel-runtime-secret";
 const baseRequest = { task: "inspect", workspace: "D:\\Repo" };
 
+test("active execution is governed by the hard deadline, not text idle", async () => {
+  const core = lifecycleCore({ idleTimeoutMs: 5, millisecondsPerMinute: 100,
+    createRuntime: async () => ({ run: async ({ onEvent }) => {
+      await onEvent({ type: "execution_started", itemId: "command_1" });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await onEvent({ type: "execution_completed", itemId: "command_1" });
+      return { finalAnswer: "done", filesChanged: [], tests: [] };
+    }, cancel: async () => {}, dispose: async () => {} }),
+  });
+  assert.equal((await core.runGeminiTask(baseRequest)).status, "completed");
+});
+
+test("notifies the owner when late setup makes shutdown uncertain", async () => {
+  let confirmed;
+  const pending = deferred();
+  const core = lifecycleCore({ prepareRuntime: () => pending.promise });
+  let id;
+  const run = core.runGeminiTask(baseRequest, {
+    onStarted: (jobId) => { id = jobId; },
+    onCleanup: (value) => { confirmed = value; },
+  });
+  while (!id) await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  await core.cancelGeminiTask(id);
+  await run;
+  assert.equal(confirmed, false);
+  pending.resolve({ run: async () => ({}), dispose: async () => {} });
+});
+
+test("a cancelled MCP request stops only its own job", async () => {
+  const abort = new AbortController();
+  const running = deferred();
+  const core = lifecycleCore({ createRuntime: async () => ({
+    run: () => { running.resolve(); return new Promise(() => {}); },
+    cancel: async () => {}, dispose: async () => {},
+  }) });
+  const result = core.runGeminiTask(baseRequest, { signal: abort.signal });
+  await running.promise;
+  abort.abort();
+  assert.equal((await result).status, "cancelled");
+});
+
 function deferred() {
   let resolve;
   let reject;

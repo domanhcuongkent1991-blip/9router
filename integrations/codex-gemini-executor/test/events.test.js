@@ -34,6 +34,46 @@ test("ignores unknown notifications without examining params", () => {
   assert.equal(normalizeAppServerNotification({ method: "unknown/event", params: "unfamiliar raw payload" }), null);
 });
 
+test("normalizes execution lifecycle and output activity without retaining command content", () => {
+  for (const itemType of ["commandExecution", "fileChange"]) {
+    for (const [method, type] of [["item/started", "execution_started"], ["item/completed", "execution_completed"]]) {
+      assert.deepEqual(normalizeAppServerNotification({
+        method,
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          item: { id: "item_1", type: itemType, command: "private command", aggregatedOutput: "private output" },
+        },
+      }), { type, threadId: "thr_1", turnId: "turn_1", itemId: "item_1" });
+    }
+  }
+  assert.deepEqual(normalizeAppServerNotification({
+    method: "item/commandExecution/outputDelta",
+    params: { threadId: "thr_1", turnId: "turn_1", itemId: "item_1", delta: "private output" },
+  }), { type: "activity", threadId: "thr_1", turnId: "turn_1", itemId: "item_1" });
+});
+
+test("rejects malformed execution activity and ignores unrelated lifecycle items", () => {
+  for (const method of ["item/started", "item/completed"]) {
+    for (const item of [{ type: "agentMessage" }, { type: "futureItem" }, null]) {
+      assert.equal(normalizeAppServerNotification({ method, params: { item } }), null);
+    }
+    for (const params of [
+      { threadId: "", turnId: "turn_1", item: { type: "commandExecution", id: "item_1" } },
+      { threadId: "thr_1", turnId: "x".repeat(513), item: { type: "fileChange", id: "item_1" } },
+      { threadId: "thr_1", turnId: "turn_1", item: { type: "commandExecution", id: null } },
+    ]) {
+      assert.throws(() => normalizeAppServerNotification({ method, params }), { code: "app_server_incompatible" });
+    }
+  }
+  for (const override of [{ threadId: "" }, { turnId: null }, { itemId: 1 }, { delta: 1 }]) {
+    assert.throws(() => normalizeAppServerNotification({
+      method: "item/commandExecution/outputDelta",
+      params: { threadId: "thr_1", turnId: "turn_1", itemId: "item_1", delta: "private output", ...override },
+    }), { code: "app_server_incompatible" });
+  }
+});
+
 test("accepts an empty bounded delta and rejects oversized ids or text", () => {
   assert.equal(normalizeAppServerNotification({
     method: "item/agentMessage/delta",

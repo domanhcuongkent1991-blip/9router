@@ -57,6 +57,7 @@ export function createWorkspaceManager({
         shell: false,
         windowsHide: true,
         maxBuffer: MAX_GIT_OUTPUT_BYTES,
+        timeout: 10_000,
       }));
     } catch (error) {
       if (error instanceof WorkspacePrepareError) throw error;
@@ -68,6 +69,32 @@ export function createWorkspaceManager({
     const workspace = request?.workspace;
     if (typeof workspace !== "string" || !win32.isAbsolute(workspace)) {
       throw new WorkspacePrepareError("workspace_prepare_error", "invalid_workspace");
+    }
+    if (request.sessionId) {
+      const context = request.resumeContext;
+      if (!context || !win32.isAbsolute(context.executionWorkspace ?? "")) {
+        throw new WorkspacePrepareError("invalid_request", "unknown_session_workspace");
+      }
+      const actual = await realpathPath(context.executionWorkspace);
+      if (win32.normalize(actual).toLowerCase() !== win32.normalize(context.executionWorkspace).toLowerCase()) {
+        throw new WorkspacePrepareError("invalid_request", "session_workspace_changed");
+      }
+      if (request.access === "read-only") {
+        if (context.worktreePath !== null || !containedOrEqual(workspace, actual) || actual.toLowerCase() !== workspace.toLowerCase()) {
+          throw new WorkspacePrepareError("invalid_request", "session_access_changed");
+        }
+      } else {
+        if (context.worktreePath !== actual || !contained(await realpathPath(worktreeRoot), actual)
+          || !COMMIT_PATTERN.test(context.head ?? "")) {
+          throw new WorkspacePrepareError("invalid_request", "invalid_session_worktree");
+        }
+        const common = async (directory) => realpathPath((await git(directory, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
+        if ((await common(workspace)).toLowerCase() !== (await common(actual)).toLowerCase()
+          || (await git(actual, ["rev-parse", "--verify", "HEAD"])).trim().toLowerCase() !== context.head) {
+          throw new WorkspacePrepareError("invalid_request", "session_repository_changed");
+        }
+      }
+      return Object.freeze({ ...context });
     }
     if (request.access === "read-only") {
       return Object.freeze({ executionWorkspace: workspace, worktreePath: null, head: null });

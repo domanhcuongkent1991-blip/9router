@@ -10,6 +10,7 @@ function fakeChild() {
   const child = new EventEmitter();
   child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
   child.exitCode = null; child.signalCode = null; child.kill = () => { child.exitCode = 0; queueMicrotask(() => child.emit("exit", 0, null)); return true; };
+  child.stdin.on("finish", () => { child.exitCode = 0; queueMicrotask(() => child.emit("exit", 0, null)); });
   return child;
 }
 
@@ -173,7 +174,13 @@ test("generates schema and launches from the exact canonical observed executable
       return options(child).schemaQualification;
     },
     schemaQualification: undefined,
-    spawnProcess: (file) => { launches.push(file); return child; },
+    spawnProcess: (file, args) => {
+      const payloadIndex = args.indexOf("-LaunchSpecBase64");
+      launches.push(payloadIndex >= 0
+        ? JSON.parse(Buffer.from(args[payloadIndex + 1], "base64").toString("utf8")).executablePath
+        : file);
+      return child;
+    },
   }));
   assert.deepEqual(schemaObservations, [canonical]);
   assert.deepEqual(launches, [canonical]);

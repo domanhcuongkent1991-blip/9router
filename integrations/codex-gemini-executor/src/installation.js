@@ -3,6 +3,8 @@ import { lstat, mkdir, readFile, readdir, realpath, rename, stat, writeFile } fr
 import { spawn, execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { win32 } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 import { prepareAppServerRuntime } from "./app-server/runtime.js";
 import { observeConfiguredExecutable } from "./app-server/executable.js";
@@ -19,6 +21,10 @@ import { validateGeminiRequest } from "./request.js";
 import { createJobStateStore } from "./state-store.js";
 import { createWorkspaceLeaseManager } from "./workspace-lease.js";
 import { createWorkspaceManager } from "./workspace.js";
+import { createExecutionOwner } from "./execution-owner.js";
+import { createSessionStore } from "./session-store.js";
+import { readRouterIdentity, requireQualifiedCombination, sourceDigest } from "./qualification.js";
+import { AppServerCompatibilityError } from "./app-server/compatibility.js";
 
 const RUNTIME_ROOT = "C:\\Users\\Admin\\Documents\\Codex\\9router-gemini-runtime";
 const WORKTREE_ROOT = "C:\\tmp\\CodexScratch\\9router-gemini-jobs";
@@ -26,6 +32,22 @@ const APP_SERVER_SCHEMA_BUNDLE = "codex_app_server_protocol.schemas.json";
 const MAX_GENERATED_SCHEMA_BYTES = 4 * 1024 * 1024;
 const SHA256 = /^[a-f0-9]{64}$/u;
 const execFile = promisify(execFileCallback);
+
+export async function observeInstalledCombination(config, { read = readFile, observe = observeConfiguredExecutable,
+  routerIdentity = readRouterIdentity, digestSource = sourceDigest } = {}) {
+  const observation = await observe({ executablePath: config.executablePath,
+    allowedExecutableRoot: config.allowedExecutableRoot, realpathPath: realpath, statPath: stat,
+    createInputStream: createReadStream, readVersion: (path) => readExecutableVersion({ executablePath: path, spawnProcess: spawn }) });
+  const sourceDirectory = fileURLToPath(new URL(".", import.meta.url));
+  const identity = {
+    appServer: { path: observation.executablePath, version: observation.version, sha256: observation.executableSha256 },
+    node: { path: process.execPath, version: process.version },
+    companionSha256: await digestSource(sourceDirectory),
+    dependencyLockSha256: createHash("sha256").update(await read(win32.join(sourceDirectory, "..", "package-lock.json"))).digest("hex"),
+    router: await routerIdentity(), model: config.fixedModel,
+  };
+  return { observation, identity };
+}
 
 export class InstallationConfigError extends Error {
   constructor(reason) {
@@ -44,7 +66,24 @@ function required(environment, name, maxBytes = 4096) {
   return value.trim();
 }
 
+function storageRoot(environment, name, fallback) {
+  const value = environment[name] === undefined ? fallback : required(environment, name);
+  if (!/^[A-Za-z]:[\\/]/u.test(value) || /[\x00-\x1f<>"|?*]/u.test(value)
+    || value.slice(2).includes(":")) throw new InstallationConfigError("invalid_storage_root");
+  const normalized = win32.normalize(value).replace(/[\\/]+$/u, "");
+  if (normalized.length <= 2 || normalized.split("\\").slice(1).some((part) => /[. ]$/u.test(part))) {
+    throw new InstallationConfigError("invalid_storage_root");
+  }
+  return normalized;
+}
+
 export function readInstallationConfig(environment = process.env) {
+  const runtimeRoot = storageRoot(environment, "NINEROUTER_RUNTIME_ROOT", RUNTIME_ROOT);
+  const worktreeRoot = storageRoot(environment, "NINEROUTER_WORKTREE_ROOT", WORKTREE_ROOT);
+  const runtimeKey = runtimeRoot.toLowerCase();
+  const worktreeKey = worktreeRoot.toLowerCase();
+  if (runtimeKey === worktreeKey || runtimeKey.startsWith(`${worktreeKey}\\`)
+    || worktreeKey.startsWith(`${runtimeKey}\\`)) throw new InstallationConfigError("overlapping_storage_roots");
   const executablePath = required(environment, "NINEROUTER_CODEX_APP_SERVER_PATH");
   const allowedExecutableRoot = required(environment, "NINEROUTER_CODEX_APP_SERVER_ROOT");
   const version = required(environment, "NINEROUTER_CODEX_BASELINE_VERSION", 4096);
@@ -58,7 +97,7 @@ export function readInstallationConfig(environment = process.env) {
     || roots.length === 0 || roots.length > 64 || roots.some((root) => !win32.isAbsolute(root))) {
     throw new InstallationConfigError("invalid_value");
   }
-  return Object.freeze({ executablePath, allowedExecutableRoot, fixedModel, apiKey, permittedWorkspaceRoots: roots,
+  return Object.freeze({ executablePath, allowedExecutableRoot, fixedModel, apiKey, runtimeRoot, worktreeRoot, permittedWorkspaceRoots: roots,
     baseline: Object.freeze({ version, executableSha256 }) });
 }
 
@@ -106,29 +145,55 @@ export async function createInstalledGeminiCompanion({ environment = process.env
   };
   const spawnProcess = dependencies.spawnProcess ?? spawn;
   const execFileSafe = dependencies.execFile ?? execFile;
-  const stateStore = createJobStateStore({ stateRoot: win32.join(RUNTIME_ROOT, "jobs"), ...fsApi });
+  const stateStore = createJobStateStore({ stateRoot: win32.join(config.runtimeRoot, "jobs"), ...fsApi });
   const recovered = await stateStore.reconcile();
   const redactor = createCompanionRedactor({ knownSecrets: [config.apiKey] });
-  const childHome = createChildHomeManager({ runtimeRoot: RUNTIME_ROOT, ...fsApi, fixedModel: config.fixedModel });
-  const workspaceManager = createWorkspaceManager({ worktreeRoot: WORKTREE_ROOT, execFile: execFileSafe, ...fsApi });
+  const childHome = createChildHomeManager({ runtimeRoot: config.runtimeRoot, ...fsApi, fixedModel: config.fixedModel });
+  const workspaceManager = createWorkspaceManager({ worktreeRoot: config.worktreeRoot, execFile: execFileSafe, ...fsApi });
+  const executionOwner = dependencies.executionOwner ?? createExecutionOwner({ directory: config.runtimeRoot });
+  const sessions = dependencies.sessions ?? createSessionStore({ directory: win32.join(config.runtimeRoot, "sessions") });
+  const observe = dependencies.observeExecutable ?? (() => observeConfiguredExecutable({
+    executablePath: config.executablePath, allowedExecutableRoot: config.allowedExecutableRoot,
+    realpathPath: fsApi.realpathPath, statPath: fsApi.statPath,
+    createInputStream: dependencies.createInputStream ?? createReadStream,
+    readVersion: (path) => readExecutableVersion({ executablePath: path, spawnProcess }),
+  }));
+  let currentQualification;
+  async function qualify() {
+    const { observation, identity } = await observeInstalledCombination(config, {
+      observe, read: fsApi.readFile,
+      routerIdentity: dependencies.routerIdentity ?? readRouterIdentity,
+      digestSource: dependencies.digestSource ?? sourceDigest,
+    });
+    let approval;
+    try {
+      const text = await fsApi.readFile(win32.join(config.runtimeRoot, "qualified-combination.json"), "utf8");
+      if (Buffer.byteLength(text) > 16384) throw new Error();
+      approval = JSON.parse(text);
+    } catch {
+      throw new AppServerCompatibilityError({ stage: "qualification", reason: "qualification_record_missing" });
+    }
+    return { observation, fingerprint: requireQualifiedCombination(identity, approval) };
+  }
 
   const prepareRuntime = async ({ jobId, request }) => {
+    currentQualification = await qualify();
+    if (request.sessionId) request.resumeContext = await sessions.load(request.sessionId, request, currentQualification.fingerprint);
     const isolated = await childHome.prepare(childEnvironment(environment, config.apiKey));
-    const schemaDirectory = win32.join(WORKTREE_ROOT, `${jobId}-schema`);
+    const schemaDirectory = win32.join(config.worktreeRoot, `${jobId}-schema`);
     return prepareAppServerRuntime({
       executablePath: config.executablePath,
       codexHome: isolated.codexHome,
       workingDirectory: request.workspace,
       environment: isolated.environment,
       spawnProcess,
-      observeExecutable: () => observeConfiguredExecutable({
-        executablePath: config.executablePath,
-        allowedExecutableRoot: config.allowedExecutableRoot,
-        realpathPath: fsApi.realpathPath,
-        statPath: fsApi.statPath,
-        createInputStream: dependencies.createInputStream ?? createReadStream,
-        readVersion: (path) => readExecutableVersion({ executablePath: path, spawnProcess }),
-      }),
+      observeExecutable: async () => currentQualification.observation,
+      beforeRun: async () => {
+        const latest = await qualify();
+        if (latest.fingerprint !== currentQualification.fingerprint) {
+          throw new AppServerCompatibilityError({ stage: "qualification", reason: "runtime_changed_during_setup" });
+        }
+      },
       baseline: config.baseline,
       clientInfo: { name: "nine_router_gemini", title: "9Router Gemini", version: "0.1.0" },
       loadSchemaQualification: async (observation) => {
@@ -144,17 +209,52 @@ export async function createInstalledGeminiCompanion({ environment = process.env
     });
   };
 
-  return createGeminiCompanionCore({
-    validateRequest: (request) => validateGeminiRequest(request, {
+  const core = createGeminiCompanionCore({
+    validateRequest: async (request) => {
+      const validated = await validateGeminiRequest(request, {
       permittedWorkspaceRoots: config.permittedWorkspaceRoots,
       realpathPath: fsApi.realpathPath,
       statPath: fsApi.statPath,
-    }),
+      });
+      return { ...validated };
+    },
     prepareRuntime,
     workspaceLeases: createWorkspaceLeaseManager(),
     workspaceManager,
     redactor,
     persistStatus: stateStore.persist,
-    initialStatuses: recovered,
+    initialStatuses: recovered.filter((record) => ["completed", "failed", "cancelled"].includes(record.status)),
+  });
+  const localJobs = new Set();
+  return Object.freeze({
+    async runGeminiTask(request, hooks = {}) {
+      const owner = await executionOwner.acquire();
+      let cleanupConfirmed = true;
+      let context;
+      let validated;
+      try {
+        cleanupConfirmed = false;
+        return await core.runGeminiTask(request, {
+          ...hooks,
+          onStarted: async (jobId) => { localJobs.add(jobId); await hooks.onStarted?.(jobId); },
+          onWorkspacePrepared: async (workspace, value) => { context = workspace; validated = value; },
+          onResult: async (result) => {
+            if (result.sessionId) await sessions.save(result.sessionId, validated, currentQualification.fingerprint, context);
+          },
+          onCleanup: async (confirmed) => { cleanupConfirmed = confirmed; },
+        });
+      } finally {
+        currentQualification = null;
+        if (!cleanupConfirmed) await owner.quarantine();
+        await owner.release();
+      }
+    },
+    getGeminiStatus: (jobId) => localJobs.has(jobId) ? core.getGeminiStatus(jobId) : stateStore.read(jobId),
+    async cancelGeminiTask(jobId) {
+      if (localJobs.has(jobId)) return core.cancelGeminiTask(jobId);
+      const status = await stateStore.read(jobId);
+      if (["completed", "failed", "cancelled"].includes(status.status)) return status;
+      throw Object.assign(new Error("Job belongs to another instance; stop it through its owner"), { code: "workspace_locked" });
+    },
   });
 }

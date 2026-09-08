@@ -215,14 +215,10 @@ function importLegacyDetails(adapter, data) {
 // ─── Main entry ──────────────────────────────────────────────────────────
 export async function runMigrationOnce(adapter) {
   if (_migratedAdapters.has(adapter)) return;
-  _migratedAdapters.add(adapter);
 
   // Capture freshness BEFORE migrations stamp _meta (otherwise we'd misclassify
   // a brand-new DB as non-fresh once schemaVersion is written).
   const fresh = isFreshDb(adapter);
-
-  // Prune stale backups every boot so old oversized backups shrink to KEEP.
-  pruneOldBackups();
 
   // Bootstrap _meta so we can read the stored backup schema version below
   // (runVersionedMigrations also ensures this, but we need it earlier here).
@@ -236,12 +232,14 @@ export async function runMigrationOnce(adapter) {
     try {
       const backupDir = makeBackupDir(`schema-${storedSchemaVer}-to-${SCHEMA_VERSION}`);
       backupDbLite(adapter, backupDir);
-      pruneOldBackups();
       console.log(`[DB][migrate] pre-schema backup ${storedSchemaVer} → ${SCHEMA_VERSION}: ${backupDir}`);
     } catch (e) {
-      console.warn(`[DB][migrate] pre-schema backup failed (continuing): ${e.message}`);
+      throw new Error(`[DB][migrate] pre-schema backup failed; migration aborted: ${e.message}`, { cause: e });
     }
   }
+
+  // Only prune older checkpoints after the required backup has succeeded.
+  pruneOldBackups();
 
   // 1. Always run versioned migrations chain (skip-version safe)
   const migInfo = runVersionedMigrations(adapter);
@@ -286,6 +284,7 @@ export async function runMigrationOnce(adapter) {
     try { fs.writeFileSync(MIGRATED_MARKER, new Date().toISOString()); } catch {}
     pruneOldBackups();
     console.log(`[DB][migrate] JSON → SQLite in ${Date.now() - t0}ms | legacy JSON kept at DATA_DIR | backup: ${backupDir}`);
+    _migratedAdapters.add(adapter);
     return;
   }
 
@@ -294,4 +293,5 @@ export async function runMigrationOnce(adapter) {
   const newVer = getAppVersion();
   const oldVer = getMetaSync(adapter, "appVersion", null);
   if (oldVer !== newVer) setMetaSync(adapter, "appVersion", newVer);
+  _migratedAdapters.add(adapter);
 }

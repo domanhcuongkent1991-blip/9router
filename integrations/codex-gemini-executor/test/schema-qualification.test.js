@@ -313,6 +313,116 @@ test("allows additive optional and unrelated definition fields", () => {
   assert.equal(qualifyStableSchemaBundle(additive).schemaSubsetCompatible, true);
 });
 
+test("checks concrete outgoing sandbox, approval, effort, and ephemeral values", () => {
+  for (const [name, field, restriction] of [
+    ["ThreadStartParams", "sandbox", { type: "string", enum: ["workspace-write"] }],
+    ["ThreadResumeParams", "sandbox", { type: "string", const: "read-only" }],
+    ["ThreadStartParams", "approvalPolicy", { type: "string", enum: ["never"] }],
+    ["TurnStartParams", "effort", { type: "string", enum: ["low", "high"] }],
+    ["ThreadStartParams", "ephemeral", { type: "boolean", const: true }],
+  ]) {
+    const bundle = schema();
+    bundle.definitions[name].properties[field] = restriction;
+    assert.equal(qualifyStableSchemaBundle(bundle).schemaSubsetCompatible, false, `${name}.${field}`);
+  }
+
+  const compatible = schema();
+  compatible.definitions.Sandbox = { type: "string", enum: ["read-only", "workspace-write", "future"] };
+  compatible.definitions.ThreadStartParams.properties.sandbox = {
+    allOf: [{ $ref: "#/definitions/Sandbox" }, { type: "string" }],
+  };
+  assert.equal(qualifyStableSchemaBundle(compatible).schemaSubsetCompatible, true);
+  compatible.definitions.ThreadStartParams.properties.sandbox.allOf.push({ enum: ["workspace-write"] });
+  assert.equal(qualifyStableSchemaBundle(compatible).schemaSubsetCompatible, false);
+});
+
+test("checks the actual text input payload against explicit item constraints", () => {
+  const textItem = objectDefinition({
+    type: { type: "string", const: "text" },
+    text: { type: "string" },
+  }, ["type", "text"]);
+  for (const items of [
+    { type: "number" },
+    { ...structuredClone(textItem), required: ["type", "text", "text_elements"] },
+    { ...structuredClone(textItem), properties: { type: { type: "string", const: "image" } } },
+    { ...structuredClone(textItem), properties: { ...textItem.properties, text: { type: "number" } } },
+  ]) {
+    const bundle = schema();
+    bundle.definitions.TurnStartParams.properties.input.items = items;
+    assert.equal(qualifyStableSchemaBundle(bundle).schemaSubsetCompatible, false);
+  }
+
+  const compatible = schema();
+  compatible.definitions.v2 = { TextInput: textItem };
+  compatible.definitions.TurnStartParams.properties.input.items = {
+    oneOf: [{ type: "number" }, { $ref: "#/definitions/v2/TextInput" }],
+  };
+  compatible.definitions.v2.TextInput.properties.text_elements = { type: "array" };
+  assert.equal(qualifyStableSchemaBundle(compatible).schemaSubsetCompatible, true);
+});
+
+test("requires explicitly described incoming turns to preserve id, items, and status", () => {
+  const turn = objectDefinition({
+    id: { type: "string" },
+    items: { type: "array" },
+    status: { type: "string", enum: ["inProgress", "completed", "interrupted", "failed", "future"] },
+  }, ["id", "items", "status"]);
+  const compatible = schema();
+  compatible.definitions.v2 = { Turn: turn };
+  for (const name of ["TurnStartedNotification", "TurnCompletedNotification"]) {
+    compatible.definitions[name].properties.turn = { $ref: "#/definitions/v2/Turn" };
+  }
+  assert.equal(qualifyStableSchemaBundle(compatible).schemaSubsetCompatible, true);
+
+  for (const field of ["id", "items", "status"]) {
+    const missing = structuredClone(compatible);
+    delete missing.definitions.v2.Turn.properties[field];
+    assert.equal(qualifyStableSchemaBundle(missing).schemaSubsetCompatible, false, `missing ${field}`);
+    const optional = structuredClone(compatible);
+    optional.definitions.v2.Turn.required = ["id", "items", "status"].filter((name) => name !== field);
+    assert.equal(qualifyStableSchemaBundle(optional).schemaSubsetCompatible, false, `optional ${field}`);
+    const wrongKind = structuredClone(compatible);
+    wrongKind.definitions.v2.Turn.properties[field] = { type: "number" };
+    assert.equal(qualifyStableSchemaBundle(wrongKind).schemaSubsetCompatible, false, `invalid ${field}`);
+  }
+  const missingStatus = structuredClone(compatible);
+  missingStatus.definitions.v2.Turn.properties.status.enum = ["inProgress", "completed", "failed"];
+  assert.equal(qualifyStableSchemaBundle(missingStatus).schemaSubsetCompatible, false);
+});
+
+test("checks optional approval response schemas against every supported decision", () => {
+  const compatible = approvalSchema();
+  const response = objectDefinition({
+    decision: { type: "string", enum: ["accept", "decline", "cancel", "future"] },
+  }, ["decision"]);
+  compatible.definitions.CommandExecutionRequestApprovalResponse = structuredClone(response);
+  compatible.definitions.FileChangeRequestApprovalResponse = structuredClone(response);
+  assert.equal(qualifyApprovalSchemaBundle(compatible).schemaSubsetCompatible, true);
+
+  const missingCancel = structuredClone(compatible);
+  missingCancel.definitions.FileChangeRequestApprovalResponse.properties.decision.enum = ["accept", "decline"];
+  const rejected = qualifyApprovalSchemaBundle(missingCancel);
+  assert.equal(rejected.schemaSubsetCompatible, false);
+  assert.equal(rejected.serverRequests["item/fileChange/requestApproval"], false);
+
+  const newlyRequired = structuredClone(compatible);
+  newlyRequired.definitions.CommandExecutionRequestApprovalResponse.required.push("futureField");
+  assert.equal(qualifyApprovalSchemaBundle(newlyRequired).schemaSubsetCompatible, false);
+
+  const versioned = approvalSchema();
+  versioned.definitions.v2 = {
+    FileChangeRequestApprovalParams: versioned.definitions.FileChangeRequestApprovalParams,
+    FileChangeRequestApprovalResponse: response,
+  };
+  versioned.definitions.ServerRequest.oneOf[1].properties.params.$ref = "#/definitions/v2/FileChangeRequestApprovalParams";
+  delete versioned.definitions.FileChangeRequestApprovalParams;
+  assert.equal(qualifyApprovalSchemaBundle(versioned).schemaSubsetCompatible, true);
+  versioned.definitions.v2.FileChangeRequestApprovalResponse.properties.decision.enum = ["accept"];
+  assert.equal(qualifyApprovalSchemaBundle(versioned).schemaSubsetCompatible, false);
+  versioned.definitions.v2.FileChangeRequestApprovalResponse = null;
+  assert.equal(qualifyApprovalSchemaBundle(versioned).schemaSubsetCompatible, false);
+});
+
 test("requires all consumed notification variants while preserving client method results", () => {
   const notifications = { ...expectedNotificationRefs };
   delete notifications["turn/completed"];

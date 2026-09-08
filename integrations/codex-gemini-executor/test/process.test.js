@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
+import { win32 } from "node:path";
 
 import {
   AppServerProcessError,
@@ -38,6 +40,7 @@ test("launches the exact executable with isolated options", () => {
     executablePath: "C:\\CodexDesktop\\codex.exe",
     codexHome: "C:\\IsolatedCodexHome",
     workingDirectory: "D:\\Workspace",
+    platform: "linux",
     environment,
     spawnProcess: (...args) => { calls.push(args); return child; },
   });
@@ -55,6 +58,40 @@ test("launches the exact executable with isolated options", () => {
     },
   ]);
   assert.deepEqual(environment, { PATH: "fixed", CODEX_HOME: "old" });
+});
+
+test("Windows launch uses the owned job helper with a fixed app-server payload", () => {
+  const child = fakeChild();
+  const calls = [];
+  const result = launchAppServer({
+    executablePath: "C:\\CodexDesktop\\codex.exe",
+    codexHome: "C:\\IsolatedCodexHome",
+    workingDirectory: "D:\\Workspace",
+    environment: { PATH: "fixed" },
+    platform: "win32",
+    spawnProcess: (...args) => { calls.push(args); return child; },
+  });
+  assert.equal(result, child);
+  assert.equal(calls.length, 1);
+  const [executable, args, options] = calls[0];
+  assert.equal(executable, win32.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"));
+  assert.deepEqual(args.slice(0, 9), [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+    fileURLToPath(new URL("../src/app-server/windows-job.ps1", import.meta.url)),
+    "-ParentPid", String(process.pid),
+  ]);
+  assert.equal(args[9], "-LaunchSpecBase64");
+  assert.deepEqual(JSON.parse(Buffer.from(args[10], "base64").toString("utf8")), {
+    executablePath: "C:\\CodexDesktop\\codex.exe",
+    arguments: ["app-server", "--listen", "stdio://"],
+  });
+  assert.deepEqual(options, {
+    cwd: "D:\\Workspace",
+    env: { PATH: "fixed", CODEX_HOME: "C:\\IsolatedCodexHome" },
+    shell: false,
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
 });
 
 test("rejects relative launch paths before spawn", () => {
@@ -200,4 +237,56 @@ test("rejects concurrent stop waiters after a bounded post-force deadline", asyn
   }
   assert.deepEqual(child.kills, ["default", "SIGKILL"]);
   assert.equal(child.listenerCount("exit"), 0);
+});
+
+function containedChild() {
+  const child = fakeChild();
+  return launchAppServer({
+    executablePath: "C:\\CodexDesktop\\codex.exe",
+    codexHome: "C:\\IsolatedCodexHome",
+    workingDirectory: "D:\\Workspace",
+    environment: {},
+    platform: "win32",
+    spawnProcess: () => child,
+  });
+}
+
+test("contained shutdown closes stdin and waits for the wrapper's cooperative exit", async () => {
+  const child = containedChild();
+  let resolved = false;
+  const stopping = stopChildProcess(child, { graceMs: 100 }).then(() => { resolved = true; });
+  assert.equal(child.stdin.writableEnded, true);
+  assert.deepEqual(child.kills, []);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(resolved, false);
+  child.exitCode = 0;
+  child.emit("exit", 0, null);
+  await stopping;
+  await stopChildProcess(child);
+  assert.equal(resolved, true);
+});
+
+test("forced contained shutdown stays unconfirmed for all later stop waiters", async () => {
+  const child = containedChild();
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    const outcomes = await Promise.allSettled([
+      stopChildProcess(child, { graceMs: 5 }),
+      stopChildProcess(child, { graceMs: 5 }),
+    ]);
+    assert.deepEqual(child.kills, ["SIGKILL"]);
+    for (const outcome of outcomes) {
+      assert.equal(outcome.status, "rejected");
+      assert.deepEqual(outcome.reason.details, { reason: "termination_unconfirmed", stage: "stop" });
+    }
+    await assert.rejects(stopChildProcess(child), (error) => error.details.reason === "termination_unconfirmed");
+  } finally {
+    clearTimeout(keepAlive);
+  }
+});
+
+test("a contained helper failure exit is never treated as confirmed shutdown", async () => {
+  const child = containedChild();
+  child.exitCode = 125;
+  await assert.rejects(stopChildProcess(child), (error) => error.details.reason === "termination_unconfirmed");
 });

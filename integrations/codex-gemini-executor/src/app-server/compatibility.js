@@ -8,10 +8,14 @@ export const APP_SERVER_REQUIRED_METHODS = Object.freeze([
 
 export class AppServerCompatibilityError extends Error {
   constructor(details) {
-    super("Codex version chưa được hỗ trợ");
+    super(details?.stage === "router"
+      ? "Cannot verify 9Router build identity. Check the configured candidate server."
+      : details?.stage === "qualification"
+        ? "Runtime combination is not qualified. Retain evidence before activation."
+        : "Codex version chưa được hỗ trợ");
     this.name = "AppServerCompatibilityError";
     this.code = "app_server_incompatible";
-    this.userMessage = "Codex version chưa được hỗ trợ";
+    this.userMessage = this.message;
     this.details = details;
   }
 }

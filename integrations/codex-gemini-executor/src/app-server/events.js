@@ -56,6 +56,41 @@ export function normalizeAppServerNotification(message) {
         text: params.delta,
       };
     }
+    case "item/commandExecution/outputDelta": {
+      const params = message.params;
+      if (!isObject(params)
+        || !isIdentifier(params.threadId)
+        || !isIdentifier(params.turnId)
+        || !isIdentifier(params.itemId)
+        || typeof params.delta !== "string"
+        || Buffer.byteLength(params.delta, "utf8") > MAX_DELTA_BYTES) {
+        fail(message.method, "invalid_execution_output_delta");
+      }
+      return {
+        type: "activity",
+        threadId: params.threadId,
+        turnId: params.turnId,
+        itemId: params.itemId,
+      };
+    }
+    case "item/started":
+    case "item/completed": {
+      const params = message.params;
+      const item = params?.item;
+      if (!isObject(item) || !["commandExecution", "fileChange"].includes(item.type)) return null;
+      if (!isObject(params)
+        || !isIdentifier(params.threadId)
+        || !isIdentifier(params.turnId)
+        || !isIdentifier(item.id)) {
+        fail(message.method, "invalid_execution_lifecycle");
+      }
+      return {
+        type: message.method === "item/started" ? "execution_started" : "execution_completed",
+        threadId: params.threadId,
+        turnId: params.turnId,
+        itemId: item.id,
+      };
+    }
     case "turn/completed": {
       const params = message.params;
       if (!isObject(params)

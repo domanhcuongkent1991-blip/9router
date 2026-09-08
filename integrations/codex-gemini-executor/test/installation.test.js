@@ -180,3 +180,80 @@ test("entrypoint import does not start stdio", async () => {
   const entry = await import("../src/index.js");
   assert.equal(typeof entry.main, "function");
 });
+
+test("keeps legacy storage defaults and accepts separate candidate roots", () => {
+  const defaults = readInstallationConfig(environment());
+  assert.equal(defaults.runtimeRoot, "C:\\Users\\Admin\\Documents\\Codex\\9router-gemini-runtime");
+  assert.equal(defaults.worktreeRoot, "C:\\tmp\\CodexScratch\\9router-gemini-jobs");
+  const candidate = readInstallationConfig(environment({
+    NINEROUTER_RUNTIME_ROOT: "C:\\Users\\Admin\\Documents\\Codex\\candidate-runtime",
+    NINEROUTER_WORKTREE_ROOT: "C:\\tmp\\CodexScratch\\candidate-jobs",
+  }));
+  assert.equal(candidate.runtimeRoot, "C:\\Users\\Admin\\Documents\\Codex\\candidate-runtime");
+  assert.equal(candidate.worktreeRoot, "C:\\tmp\\CodexScratch\\candidate-jobs");
+});
+
+test("rejects unsafe or overlapping storage overrides", () => {
+  for (const value of ["", "relative", "C:relative", "\\rooted", "C:\\", "C:\\bad\npath", "\\\\host\\share", "C:\\data:stream"]) {
+    assert.throws(() => readInstallationConfig(environment({ NINEROUTER_RUNTIME_ROOT: value })),
+      { code: "invalid_installation_configuration" });
+  }
+  assert.throws(() => readInstallationConfig(environment({
+    NINEROUTER_RUNTIME_ROOT: "C:\\candidate",
+    NINEROUTER_WORKTREE_ROOT: "c:\\candidate\\jobs",
+  })), { code: "invalid_installation_configuration" });
+});
+
+test("unqualified runtime blocks execution before child config/schema/worktree writes", async () => {
+  const writes = [];
+  let releases = 0;
+  const core = await installation.createInstalledGeminiCompanion({ environment: environment(), dependencies: {
+    listDirectory: async () => [], realpathPath: async (path) => path, statPath: async () => ({ isDirectory: () => true }),
+    readFile: async (path) => {
+      if (path.endsWith("package-lock.json")) return "{}";
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
+    mkdirPath: async () => {}, writeFile: async (path) => writes.push(path), renamePath: async () => {},
+    spawnProcess: () => { throw new Error("must not launch"); },
+    observeExecutable: async () => ({ executablePath: "C:\\CodexDesktop\\codex.exe", version: "1", executableSha256: "a".repeat(64) }),
+    routerIdentity: async () => ({ version: "0.5.65", buildId: "build_1", contractVersion: 1 }),
+    digestSource: async () => "b".repeat(64),
+    executionOwner: { acquire: async () => ({ release: async () => { releases++; }, quarantine: async () => {} }) },
+  } });
+  const result = await core.runGeminiTask({ workspace: "D:\\Repo", task: "test" });
+  assert.equal(result.error.category, "app_server_incompatible");
+  assert.equal(releases, 1);
+  assert.ok(writes.every((path) => path.includes("\\jobs\\") && path.endsWith(".tmp")));
+});
+
+test("candidate instances keep job state and qualification reads in their own roots", async () => {
+  for (const name of ["candidate-a", "candidate-b"]) {
+    const runtimeRoot = `C:\\Canary\\${name}`;
+    const touched = [];
+    const record = async (path) => { touched.push(path); };
+    const core = await installation.createInstalledGeminiCompanion({
+      environment: environment({ NINEROUTER_RUNTIME_ROOT: runtimeRoot,
+        NINEROUTER_WORKTREE_ROOT: `C:\\CanaryJobs\\${name}` }),
+      dependencies: {
+        listDirectory: async (path) => { touched.push(path); return []; },
+        realpathPath: async path => path, statPath: async () => ({ isDirectory: () => true }),
+        readFile: async path => {
+          if (path.endsWith("package-lock.json")) return "{}";
+          touched.push(path);
+          throw Object.assign(new Error("missing"), { code: "ENOENT" });
+        },
+        mkdirPath: record, writeFile: record, renamePath: record,
+        spawnProcess: () => { throw new Error("must not launch"); },
+        observeExecutable: async () => ({ executablePath: "C:\\CodexDesktop\\codex.exe", version: "1", executableSha256: "a".repeat(64) }),
+        routerIdentity: async () => ({ version: "0.5.65", buildId: "build_1", contractVersion: 1 }),
+        digestSource: async () => "b".repeat(64),
+        executionOwner: { acquire: async () => ({ release: async () => {}, quarantine: async () => {} }) },
+      },
+    });
+    const result = await core.runGeminiTask({ workspace: "D:\\Repo", task: "test" });
+    assert.equal(result.error.category, "app_server_incompatible");
+    assert.ok(touched.includes(`${runtimeRoot}\\qualified-combination.json`));
+    assert.ok(touched.some(path => path.startsWith(`${runtimeRoot}\\jobs`)));
+    assert.ok(touched.every(path => path === runtimeRoot || path.startsWith(`${runtimeRoot}\\`)));
+  }
+});

@@ -28,7 +28,7 @@ test("persists only minimal sanitized atomic state with revision guards", async 
     { code: "stale_state_revision" });
 });
 
-test("reconciles stale nonterminal jobs without killing or deleting anything", async () => {
+test("does not rewrite another instance's nonterminal jobs during discovery", async () => {
   const files = new Map([["C:\\runtime\\jobs\\job_1.json", JSON.stringify({
     jobId: "job_1", status: "running", revision: 2, workspace: "D:\\Repo",
     worktreePath: "C:\\tmp\\CodexScratch\\9router-gemini-jobs\\job_1", updatedAt: "old",
@@ -41,8 +41,9 @@ test("reconciles stale nonterminal jobs without killing or deleting anything", a
     listDirectory: async () => ["job_1.json"], now: () => "now",
   });
   const recovered = await store.reconcile();
-  assert.equal(recovered[0].status, "failed");
-  assert.equal(recovered[0].error.category, "protocol_error");
+  assert.equal(recovered[0].status, "running");
+  assert.equal(recovered[0].revision, 2);
+  assert.equal(JSON.parse(files.get("C:\\runtime\\jobs\\job_1.json")).status, "running");
   assert.equal(recovered[0].worktreePath.endsWith("job_1"), true);
 });
 

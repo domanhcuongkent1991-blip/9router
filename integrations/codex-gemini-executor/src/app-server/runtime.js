@@ -62,10 +62,11 @@ export async function prepareAppServerRuntime({
   fixedModelProvider,
   sanitizeForDisplay,
   onWarning = () => {},
-  requestTimeoutMs = 5_000,
+  requestTimeoutMs = 15_000,
   approvalTimeoutMs = 120_000,
   maxStderrBytes = MAX_STDERR_BYTES,
   stopProcess = stopChildProcess,
+  beforeRun = async () => {},
 }) {
   let observation;
   try {
@@ -187,6 +188,7 @@ export async function prepareAppServerRuntime({
   async function run({ request, executionWorkspace, onEvent, requestDecision, jobId = "job_runtime" }) {
     if (used || disposed || fatalError) throw compatibilityError("runtime", "runtime_unavailable", observation);
     used = true;
+    await beforeRun();
     if (typeof onEvent !== "function") throw compatibilityError("runtime", "event_handler_required", observation);
     const threadPolicy = {
       cwd: executionWorkspace,

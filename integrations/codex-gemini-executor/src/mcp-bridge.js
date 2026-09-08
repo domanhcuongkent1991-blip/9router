@@ -142,6 +142,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
     };
     activeRuns.add(pending);
     pending.completion = Promise.resolve(core.runGeminiTask(request, {
+      signal: context?.signal ?? context?.mcpReq?.signal,
       onStarted: async (jobId) => {
         pending.jobId = jobId;
         pendingByJob.set(jobId, pending);
@@ -158,7 +159,8 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
       },
     })).then(
       (result) => ({ type: "terminal", result }),
-      () => ({ type: "terminal", result: { jobId: pending.jobId ?? "job_unavailable", status: "failed", error: { category: "protocol_error" } } }),
+      (error) => ({ type: "terminal", result: { jobId: pending.jobId ?? "job_unavailable", status: "failed",
+        error: { category: ["workspace_locked", "app_server_incompatible", "invalid_request"].includes(error?.code) ? error.code : "protocol_error" } } }),
     );
     pending.completion.then(() => cleanupPending(pending));
     return pending;
@@ -284,7 +286,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
   server.registerTool("get_gemini_status", {
     title: "Get Gemini job status", inputSchema: idInput, outputSchema: resultSchema,
     annotations: { readOnlyHint: true },
-  }, async ({ job_id: jobId }) => toolResult(core.getGeminiStatus(jobId)));
+  }, async ({ job_id: jobId }) => toolResult(await core.getGeminiStatus(jobId)));
   server.registerTool("cancel_gemini_task", {
     title: "Cancel Gemini job", inputSchema: idInput, outputSchema: resultSchema,
   }, async ({ job_id: jobId }) => {

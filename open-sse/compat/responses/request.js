@@ -235,6 +235,7 @@ function normalizeReasoningItem(item, path, state) {
   const normalized = { ...item };
   for (const field of ["summary", "content"]) {
     if (item[field] === undefined) continue;
+    if (field === "content" && item[field] === null) continue;
     if (!Array.isArray(item[field])) {
       return fail(`Reasoning ${field} must be an array.`, `${path}.${field}`, "invalid_type");
     }

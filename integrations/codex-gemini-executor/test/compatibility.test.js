@@ -18,6 +18,18 @@ function compatibleInput(overrides = {}) {
   };
 }
 
+test("router and qualification errors identify the failed gate without echoing details", () => {
+  const router = new AppServerCompatibilityError({ stage: "router", reason: "private-token" });
+  const qualification = new AppServerCompatibilityError({ stage: "qualification", reason: "private-token" });
+  assert.match(router.message, /9Router/);
+  assert.match(qualification.message, /qualified/);
+  for (const error of [router, qualification]) {
+    assert.equal(error.code, "app_server_incompatible");
+    assert.equal(error.userMessage, error.message);
+    assert.ok(!error.message.includes("private-token"));
+  }
+});
+
 test("allows a new Codex version when required capabilities still pass", () => {
   const result = assessAppServerCompatibility(compatibleInput());
   assert.equal(result.status, "compatible");

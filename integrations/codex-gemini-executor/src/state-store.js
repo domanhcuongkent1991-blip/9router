@@ -106,20 +106,19 @@ export function createJobStateStore({ stateRoot, mkdirPath, writeFile, renamePat
       } catch { continue; }
       if (record?.jobId !== match[1] || !STATUSES.has(record?.status) || !Number.isSafeInteger(record?.revision)) continue;
       revisions.set(record.jobId, record.revision);
-      if (TERMINAL.has(record.status)) {
-        recovered.push(minimal(record, record.revision, typeof record.updatedAt === "string" ? record.updatedAt : "unknown"));
-        continue;
-      }
-      recovered.push(await persist({
-        jobId: record.jobId,
-        status: "failed",
-        ...(typeof record.workspace === "string" ? { workspace: record.workspace } : {}),
-        ...(Object.hasOwn(record, "worktreePath") ? { worktreePath: record.worktreePath } : {}),
-        error: { category: "protocol_error" },
-      }, { expectedRevision: record.revision }));
+      // Discovery cannot distinguish an orphan from another live MCP instance.
+      recovered.push(minimal(record, record.revision, typeof record.updatedAt === "string" ? record.updatedAt : "unknown"));
     }
     return recovered;
   }
 
-  return Object.freeze({ persist, reconcile });
+  async function read(jobId) {
+    if (!SAFE_JOB_ID.test(jobId)) throw new JobStateError("invalid_request", "invalid_job_id");
+    const raw = await readFile(pathFor(jobId), "utf8");
+    if (Buffer.byteLength(raw) > MAX_STATE_BYTES) throw new JobStateError("state_error", "state_too_large");
+    const record = JSON.parse(raw);
+    if (record.jobId !== jobId || !Number.isSafeInteger(record.revision)) throw new JobStateError("state_error", "invalid_snapshot");
+    return minimal(record, record.revision, record.updatedAt);
+  }
+  return Object.freeze({ persist, reconcile, read });
 }

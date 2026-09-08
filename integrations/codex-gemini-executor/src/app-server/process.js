@@ -1,6 +1,8 @@
 import { win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const stopOperations = new WeakMap();
+const containedChildren = new WeakSet();
 
 export class AppServerProcessError extends Error {
   constructor(reason, stage, cause) {
@@ -34,6 +36,7 @@ export function launchAppServer({
   workingDirectory,
   environment,
   spawnProcess,
+  platform = process.platform,
 }) {
   requireAbsolute(executablePath, "executable_path_not_absolute");
   requireAbsolute(codexHome, "codex_home_not_absolute");
@@ -42,10 +45,26 @@ export function launchAppServer({
     throw new AppServerProcessError("invalid_environment", "validate");
   }
 
-  return spawnExact(
+  const appServerArguments = ["app-server", "--listen", "stdio://"];
+  const launchExecutable = platform === "win32"
+    ? win32.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    : executablePath;
+  const launchArguments = platform === "win32"
+    ? [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+      fileURLToPath(new URL("./windows-job.ps1", import.meta.url)),
+      "-ParentPid", String(process.pid),
+      "-LaunchSpecBase64", Buffer.from(JSON.stringify({
+        executablePath,
+        arguments: appServerArguments,
+      }), "utf8").toString("base64"),
+    ]
+    : appServerArguments;
+
+  const child = spawnExact(
     spawnProcess,
-    executablePath,
-    ["app-server", "--listen", "stdio://"],
+    launchExecutable,
+    launchArguments,
     {
       cwd: workingDirectory,
       env: { ...environment, CODEX_HOME: codexHome },
@@ -55,6 +74,8 @@ export function launchAppServer({
     },
     "launch",
   );
+  if (platform === "win32") containedChildren.add(child);
+  return child;
 }
 
 function runBoundedCommand({
@@ -183,8 +204,15 @@ export async function generateStableSchemaBundle({
 }
 
 export async function stopChildProcess(child, { graceMs = 1_000 } = {}) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
   if (stopOperations.has(child)) return stopOperations.get(child);
+  const contained = containedChildren.has(child);
+  const failedConfirmation = () => contained && (
+    child.killed || child.signalCode !== null || child.exitCode === 125
+  );
+  if (child.exitCode !== null || child.signalCode !== null) {
+    if (failedConfirmation()) throw new AppServerProcessError("termination_unconfirmed", "stop");
+    return;
+  }
 
   const operation = new Promise((resolve, reject) => {
     let graceTimer;
@@ -197,13 +225,18 @@ export async function stopChildProcess(child, { graceMs = 1_000 } = {}) {
       clearTimeout(graceTimer);
       clearTimeout(forceTimer);
       child.off("exit", onExit);
+      if (!error && contained && (forced || failedConfirmation())) {
+        error = new AppServerProcessError("termination_unconfirmed", "stop");
+      }
       if (error) reject(error);
       else resolve();
     };
     const onExit = () => finish();
     child.on("exit", onExit);
     try {
-      child.kill();
+      // EOF lets the wrapper terminate and verify its job before it exits.
+      if (contained) child.stdin.end();
+      else child.kill();
     } catch (error) {
       finish(new AppServerProcessError("termination_failed", "stop", error));
       return;
@@ -231,7 +264,7 @@ export async function stopChildProcess(child, { graceMs = 1_000 } = {}) {
       }
       forceTimer = setTimeout(() => {
         if (child.exitCode !== null || child.signalCode !== null) finish();
-        else finish(new AppServerProcessError("termination_timeout", "stop"));
+        else finish(new AppServerProcessError(contained ? "termination_unconfirmed" : "termination_timeout", "stop"));
       }, graceMs);
       forceTimer.unref?.();
     }, graceMs);

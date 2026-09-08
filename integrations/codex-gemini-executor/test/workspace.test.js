@@ -5,6 +5,23 @@ import { createWorkspaceManager } from "../src/workspace.js";
 
 const root = "C:\\tmp\\CodexScratch\\9router-gemini-jobs";
 
+test("resumes only the validated worktree and does not create a replacement", async () => {
+  const calls = [];
+  const manager = createWorkspaceManager({ worktreeRoot: root,
+    mkdirPath: async () => { throw new Error("must not create"); }, lstatPath: async () => ({}),
+    realpathPath: async (value) => value,
+    execFile: async (_file, args) => {
+      calls.push(args);
+      return { stdout: args.includes("--git-common-dir") ? "D:\\Repo\\.git" : "a".repeat(40) };
+    },
+  });
+  const workspace = { executionWorkspace: `${root}\\job_old`, worktreePath: `${root}\\job_old`, head: "a".repeat(40) };
+  const result = await manager.prepare({ workspace: "D:\\Repo", access: "workspace-write", sessionId: "session_1", resumeContext: workspace }, "job_new");
+  assert.deepEqual(result, workspace);
+  assert.equal(calls.some((args) => args.includes("add")), false);
+  await assert.rejects(manager.prepare({ workspace: "D:\\Repo", access: "read-only", sessionId: "unknown" }, "job_new"));
+});
+
 function fixture({ status = "", escaped = false } = {}) {
   const calls = [];
   const manager = createWorkspaceManager({

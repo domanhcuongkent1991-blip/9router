@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { APP_SERVER_REQUIRED_METHODS } from "./compatibility.js";
 
 const EXPECTED_PARAMETER_REFS = Object.freeze({
@@ -42,6 +44,11 @@ const PARAMETER_CONTRACTS = Object.freeze({
       ephemeral: "boolean",
     },
     required: [],
+    values: {
+      sandbox: ["read-only", "workspace-write"],
+      approvalPolicy: ["on-request", "never"],
+      ephemeral: [false],
+    },
   },
   "#/definitions/ThreadResumeParams": {
     direction: "outgoing",
@@ -54,11 +61,19 @@ const PARAMETER_CONTRACTS = Object.freeze({
       approvalPolicy: "string",
     },
     required: ["threadId"],
+    values: {
+      sandbox: ["read-only", "workspace-write"],
+      approvalPolicy: ["on-request", "never"],
+    },
   },
   "#/definitions/TurnStartParams": {
     direction: "outgoing",
     fields: { threadId: "string", input: "array", model: "string", effort: "string" },
     required: ["threadId", "input"],
+    values: {
+      input: [[{ type: "text", text: "task" }]],
+      effort: ["low", "medium", "high"],
+    },
   },
   "#/definitions/TurnInterruptParams": {
     direction: "outgoing",
@@ -69,6 +84,7 @@ const PARAMETER_CONTRACTS = Object.freeze({
     direction: "incoming",
     fields: { threadId: "string", turn: "object" },
     required: ["threadId", "turn"],
+    turnStatuses: ["inProgress"],
   },
   "#/definitions/AgentMessageDeltaNotification": {
     direction: "incoming",
@@ -79,6 +95,7 @@ const PARAMETER_CONTRACTS = Object.freeze({
     direction: "incoming",
     fields: { threadId: "string", turn: "object" },
     required: ["threadId", "turn"],
+    turnStatuses: ["completed", "interrupted", "failed"],
   },
   "#/definitions/CommandExecutionRequestApprovalParams": {
     direction: "incoming",
@@ -182,6 +199,72 @@ function fieldKindCompatible(schema, expectedKind, definitions, direction) {
   return direction === "outgoing" || [...kinds].every((kind) => kind === expectedKind);
 }
 
+// Check the concrete wire shapes this adapter sends, not every JSON Schema feature.
+function acceptsValue(schema, value, definitions, depth = 0) {
+  if (schema === true) return true;
+  if (!isObject(schema) || depth > 32) return false;
+  const accepts = (child, candidate = value) => acceptsValue(child, candidate, definitions, depth + 1);
+  if (Object.hasOwn(schema, "$ref") && !accepts(resolveDefinition(definitions, schema.$ref))) return false;
+  if (Object.hasOwn(schema, "const") && !isDeepStrictEqual(schema.const, value)) return false;
+  if (Object.hasOwn(schema, "enum")
+    && (!Array.isArray(schema.enum) || !schema.enum.some((entry) => isDeepStrictEqual(entry, value)))) return false;
+  if (schema.type !== undefined) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+    const kind = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+    if (!types.some((type) => type === kind || (type === "integer" && Number.isInteger(value)))) return false;
+  }
+  for (const keyword of ["allOf", "anyOf", "oneOf"]) {
+    if (schema[keyword] === undefined) continue;
+    const branches = schema[keyword];
+    if (!Array.isArray(branches) || branches.length === 0) return false;
+    const matches = branches.filter((branch) => accepts(branch)).length;
+    if (keyword === "allOf" ? matches !== branches.length : keyword === "oneOf" ? matches !== 1 : matches === 0) {
+      return false;
+    }
+  }
+  if (schema.not !== undefined && accepts(schema.not)) return false;
+  if (isObject(value)) {
+    if (!validRequired(schema.required) || schema.required?.some((field) => !Object.hasOwn(value, field))) return false;
+    if (schema.properties !== undefined && !isObject(schema.properties)) return false;
+    for (const [field, fieldValue] of Object.entries(value)) {
+      if (Object.hasOwn(schema.properties ?? {}, field)) {
+        if (!accepts(schema.properties[field], fieldValue)) return false;
+      } else if (schema.additionalProperties !== undefined && !accepts(schema.additionalProperties, fieldValue)) {
+        return false;
+      }
+    }
+  }
+  if (Array.isArray(value)) {
+    if (schema.minItems !== undefined && value.length < schema.minItems) return false;
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) return false;
+    if (Array.isArray(schema.items)) {
+      if (!value.every((entry, index) => accepts(schema.items[index] ?? schema.additionalItems ?? true, entry))) return false;
+    } else if (schema.items !== undefined && !value.every((entry) => accepts(schema.items, entry))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function turnShapeCompatible(schema, statuses, definitions, depth = 0) {
+  if (!isObject(schema) || depth > 32) return false;
+  if (Object.hasOwn(schema, "$ref")
+    && !turnShapeCompatible(resolveDefinition(definitions, schema.$ref), statuses, definitions, depth + 1)) return false;
+  for (const keyword of ["allOf", "anyOf", "oneOf"]) {
+    if (schema[keyword] === undefined) continue;
+    if (!Array.isArray(schema[keyword]) || schema[keyword].length === 0
+      || !schema[keyword].every((branch) => turnShapeCompatible(branch, statuses, definitions, depth + 1))) return false;
+  }
+  // Older type-only schemas do not describe nested fields; explicit shapes must preserve them.
+  if (schema.properties === undefined && schema.required === undefined) return true;
+  if (!isObject(schema.properties) || !validRequired(schema.required)) return false;
+  return Object.entries({ id: "string", items: "array", status: "string" }).every(([field, kind]) => (
+    schema.required?.includes(field)
+    && fieldKindCompatible(schema.properties[field], kind, definitions, "incoming")
+    && (field !== "status" || statuses.every((status) => acceptsValue(schema.properties.status, status, definitions)))
+  ));
+}
+
 function definitionCompatible(definitions, actualRef, expectedRef) {
   const contract = PARAMETER_CONTRACTS[expectedRef];
   const definition = resolveDefinition(definitions, actualRef);
@@ -199,7 +282,22 @@ function definitionCompatible(definitions, actualRef, expectedRef) {
     Object.hasOwn(definition.properties, field)
     && fieldKindCompatible(definition.properties[field], kind, definitions, contract.direction)
     && (contract.direction === "outgoing" || required.includes(field))
+    && (contract.values?.[field] ?? []).every((value) => acceptsValue(definition.properties[field], value, definitions))
+    && (field !== "turn" || !contract.turnStatuses
+      || turnShapeCompatible(definition.properties.turn, contract.turnStatuses, definitions))
   ));
+}
+
+function approvalResponseCompatible(definitions, actualRef, expectedRef) {
+  const responseName = expectedRef.split("/").at(-1).replace(/Params$/u, "Response");
+  if (!definitionPath(actualRef)) return false;
+  const parentRef = actualRef.slice(0, actualRef.lastIndexOf("/") + 1);
+  const localResponse = resolveDefinition(definitions, `${parentRef}${responseName}`);
+  const response = localResponse === undefined
+    ? resolveDefinition(definitions, `#/definitions/${responseName}`)
+    : localResponse;
+  return response === undefined
+    || ["accept", "decline", "cancel"].every((decision) => acceptsValue(response, { decision }, definitions));
 }
 
 function isCompatibleVariant(variant, method, expectedRef, requiresId, definitions) {
@@ -266,6 +364,11 @@ export function qualifyApprovalSchemaBundle(bundle) {
     requiresId: true,
     definitions: bundle.definitions,
   });
+  for (const [method, expectedRef] of Object.entries(EXPECTED_APPROVAL_REFS)) {
+    if (!serverRequests[method]) continue;
+    const actualRef = variants.find((variant) => variantMethod(variant) === method).properties.params.$ref;
+    serverRequests[method] = approvalResponseCompatible(bundle.definitions, actualRef, expectedRef);
+  }
   return { schemaSubsetCompatible: allCompatible(serverRequests), serverRequests };
 }
 
