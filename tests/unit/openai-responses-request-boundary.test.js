@@ -146,6 +146,47 @@ describe("Responses compatibility request boundary", () => {
     expect(request).toEqual(original);
   });
 
+  it.each([null, []])("accepts reasoning content %# and preserves reasoning metadata without mutation", async (content) => {
+    const { validateAndNormalizeResponsesRequest } = await loadRequestSubject();
+    const reasoning = {
+      type: "reasoning",
+      content,
+      summary: [{ type: "summary_text", text: "brief rationale" }],
+      encrypted_content: "opaque-reasoning-payload",
+    };
+    const request = validRequest({ input: [reasoning] });
+    const original = structuredClone(request);
+
+    const result = validateAndNormalizeResponsesRequest(request);
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        input: [{
+          type: "reasoning",
+          content,
+          summary: [{ type: "summary_text", text: "brief rationale" }],
+          encrypted_content: "opaque-reasoning-payload",
+        }],
+      },
+    });
+    expect(result.value.input[0]).not.toBe(reasoning);
+    expect(result.value.input[0].summary).not.toBe(reasoning.summary);
+    if (Array.isArray(content)) expect(result.value.input[0].content).not.toBe(content);
+    expect(request).toEqual(original);
+  });
+
+  it.each(["not-an-array", { text: "not-an-array" }])("rejects reasoning content with invalid type %#", async (content) => {
+    const { validateAndNormalizeResponsesRequest } = await loadRequestSubject();
+
+    expect(validateAndNormalizeResponsesRequest(validRequest({
+      input: [{ type: "reasoning", content }],
+    }))).toMatchObject({
+      ok: false,
+      error: { param: "input[0].content", code: "invalid_type" },
+    });
+  });
+
   it("rejects distinct call identifiers that collide after clamping", async () => {
     const { validateAndNormalizeResponsesRequest } = await loadRequestSubject();
     const prefix = "x".repeat(64);

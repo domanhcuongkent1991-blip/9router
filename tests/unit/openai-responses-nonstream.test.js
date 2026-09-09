@@ -7,7 +7,7 @@ vi.mock("@/lib/usageDb.js", () => ({
 }));
 
 const { FORMATS } = await import("../../open-sse/translator/formats.js");
-const { translateNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
+const { translateNonStreamingResponse, translateNonStreamingProviderResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
 const { handleForcedSSEToJson } = await import("../../open-sse/handlers/chatCore/sseToJsonHandler.js");
 
 // A chat.completion body as returned by a chat-native upstream (e.g. op-ericding)
@@ -29,6 +29,29 @@ const CHAT_TOOL_BODY = {
 };
 
 describe("non-stream Chat upstream for a Responses-API client (op-ericding bug)", () => {
+  it("converts a chat completion when a Responses transport returns the wrong wire format", () => {
+    const out = translateNonStreamingProviderResponse(
+      CHAT_TOOL_BODY,
+      FORMATS.OPENAI_RESPONSES,
+      FORMATS.OPENAI_RESPONSES,
+    );
+
+    expect(out.object).toBe("response");
+    expect(out.output.find((item) => item.type === "function_call")).toMatchObject({
+      call_id: "call_1", name: "shell", arguments: "{\"cmd\":\"ls\"}",
+    });
+  });
+
+  it("converts a native Antigravity response through chat completion into Responses output", () => {
+    const out = translateNonStreamingProviderResponse({
+      candidates: [{ content: { parts: [{ text: "done" }] }, finishReason: "STOP" }],
+      modelVersion: "gemini-3.8-flash",
+    }, FORMATS.ANTIGRAVITY, FORMATS.OPENAI_RESPONSES);
+
+    expect(out.object).toBe("response");
+    expect(out.output[0]).toMatchObject({ type: "message", role: "assistant" });
+  });
+
   it("translates chat.completion tool_calls into Responses function_call output", () => {
     // translateNonStreamingResponse(body, targetFormat=PROVIDER format, sourceFormat=CLIENT format)
     const out = translateNonStreamingResponse(CHAT_TOOL_BODY, FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES);

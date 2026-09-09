@@ -285,6 +285,22 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
   return responseBody;
 }
 
+export function translateNonStreamingProviderResponse(responseBody, targetFormat, sourceFormat, customToolNames = null, namespaceToolMap = null) {
+  const translated = needsTranslation(targetFormat, sourceFormat)
+    ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames, namespaceToolMap)
+    : responseBody;
+  if (sourceFormat === FORMATS.OPENAI_RESPONSES && translated?.object === "chat.completion") {
+    return translateNonStreamingResponse(
+      translated,
+      FORMATS.OPENAI,
+      FORMATS.OPENAI_RESPONSES,
+      customToolNames,
+      namespaceToolMap,
+    );
+  }
+  return translated;
+}
+
 /**
  * Handle non-streaming response from provider.
  */
@@ -328,9 +344,13 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
   if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
-  const translatedResponse = needsTranslation(targetFormat, sourceFormat)
-    ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames, namespaceToolMap)
-    : responseBody;
+  const translatedResponse = translateNonStreamingProviderResponse(
+    responseBody,
+    targetFormat,
+    sourceFormat,
+    customToolNames,
+    namespaceToolMap,
+  );
   const isClaudeMessageResponse = sourceFormat === FORMATS.CLAUDE && translatedResponse?.type === "message";
   // Responses-format translation produces a `object:"response"` body with no
   // `choices`; skip the Chat-Completions-specific post-processing below for it.
