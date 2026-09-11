@@ -11,7 +11,8 @@ export function createSessionStore({ directory, io = fs }) {
         if (Buffer.byteLength(raw) > 16384) throw new Error();
         const record = JSON.parse(raw);
         if (record.schemaVersion !== 1 || record.sessionId !== sessionId || record.fingerprint !== fingerprint
-          || record.workspace !== request.workspace || record.access !== request.access || !record.context) throw new Error();
+          || record.workspace !== request.workspace || record.access !== request.access || record.model !== request.model
+          || !record.context) throw new Error();
         return record.context;
       } catch {
         throw Object.assign(new Error("Session is unknown or belongs to another workspace/runtime"), { code: "invalid_request" });
@@ -19,7 +20,7 @@ export function createSessionStore({ directory, io = fs }) {
     },
     async save(sessionId, request, fingerprint, context) {
       const text = JSON.stringify({ schemaVersion: 1, sessionId, fingerprint,
-        workspace: request.workspace, access: request.access, context });
+        workspace: request.workspace, access: request.access, model: request.model, context });
       if (Buffer.byteLength(text) > 16384) throw new Error("Session metadata too large");
       await io.mkdir(directory, { recursive: true });
       const target = pathFor(sessionId);

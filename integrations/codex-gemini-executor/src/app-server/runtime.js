@@ -24,6 +24,25 @@ function compatibilityError(stage, reason, observation) {
   });
 }
 
+function turnFailure(error = {}) {
+  const details = {
+    remoteSource: "unknown",
+    ...(typeof error.code === "string" ? { remoteCode: error.code } : {}),
+    ...(Number.isInteger(error.status) && error.status >= 100 && error.status <= 599
+      ? { remoteStatus: error.status } : {}),
+  };
+  return Object.assign(new Error("App Server turn failed"), {
+    name: "AppServerTurnError",
+    code: "app_server_turn_error",
+    details,
+  });
+}
+
+function usefulTurnError(error) {
+  return error !== undefined
+    && (typeof error?.code === "string" || Number.isInteger(error?.status));
+}
+
 function boundedAppend(current, delta, sanitizeForDisplay) {
   let sanitized;
   try { sanitized = sanitizeForDisplay(`${current}${delta}`); } catch {
@@ -58,8 +77,7 @@ export async function prepareAppServerRuntime({
   clientInfo,
   schemaQualification,
   loadSchemaQualification,
-  fixedModel,
-  fixedModelProvider,
+  model,
   sanitizeForDisplay,
   onWarning = () => {},
   requestTimeoutMs = 15_000,
@@ -131,6 +149,9 @@ export async function prepareAppServerRuntime({
       }
       if (!active.turnId) active.turnId = event.turnId;
       if (event.type === "assistant_delta") active.answer = boundedAppend(active.answer, event.text, sanitizeForDisplay);
+      if (event.type === "turn_error" && !event.willRetry && usefulTurnError(event.error)) {
+        active.lastTerminalError = event.error;
+      }
       await active.onEvent(event);
       if (event.type === "turn_completed") active.terminal.resolve({ event });
     } catch (error) {
@@ -182,13 +203,14 @@ export async function prepareAppServerRuntime({
     throw compatibilityError("handshake", "handshake_failed", observation);
   }
 
-  const session = createAppServerSessionAdapter({ client, fixedModel, fixedModelProvider });
+  const session = createAppServerSessionAdapter({ client, model });
   let used = false;
 
   async function run({ request, executionWorkspace, onEvent, requestDecision, jobId = "job_runtime" }) {
     if (used || disposed || fatalError) throw compatibilityError("runtime", "runtime_unavailable", observation);
     used = true;
     await beforeRun();
+    if (request?.model !== model) throw compatibilityError("runtime", "model_mismatch", observation);
     if (typeof onEvent !== "function") throw compatibilityError("runtime", "event_handler_required", observation);
     const threadPolicy = {
       cwd: executionWorkspace,
@@ -203,6 +225,7 @@ export async function prepareAppServerRuntime({
       jobId,
       threadId: thread.threadId,
       turnId: null,
+      lastTerminalError: undefined,
       answer: "",
       onEvent,
       terminal,
@@ -230,7 +253,9 @@ export async function prepareAppServerRuntime({
     ]);
     if (outcome.error) throw outcome.error;
     if (outcome.event.status === "cancelled") throw Object.assign(new Error("Turn cancelled"), { code: "cancelled" });
-    if (outcome.event.status !== "completed") throw Object.assign(new Error("Turn failed"), { code: "protocol_error" });
+    if (outcome.event.status !== "completed") {
+      throw turnFailure(usefulTurnError(outcome.event.error) ? outcome.event.error : active.lastTerminalError);
+    }
     return {
       sessionId: thread.threadId,
       finalAnswer: active.answer,

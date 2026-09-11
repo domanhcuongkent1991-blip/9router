@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { PassThrough } from "node:stream";
 
 import {
   CLIENT_CAPABILITIES_META_KEY,
@@ -9,6 +10,12 @@ import {
   inputResponse,
 } from "@modelcontextprotocol/server";
 import { createGeminiMcpServer } from "../src/mcp-bridge.js";
+import { createGeminiCompanionCore } from "../src/core.js";
+import { createAppServerJsonlClient } from "../src/app-server/jsonl-client.js";
+import { createAppServerSessionAdapter } from "../src/app-server/session.js";
+import { createCompanionRedactor } from "../src/redaction.js";
+import { createJobStateStore } from "../src/state-store.js";
+import { createWorkspaceLeaseManager } from "../src/workspace-lease.js";
 
 class FakeServer {
   constructor(info, options) { this.info = info; this.options = options; this.tools = new Map(); }
@@ -24,7 +31,9 @@ test("registers exactly three bounded tools and rejects routing overrides", asyn
   const server = createGeminiMcpServer({ core, ServerClass: FakeServer });
   assert.deepEqual([...server.tools.keys()], ["run_gemini_task", "get_gemini_status", "cancel_gemini_task"]);
   const run = server.tools.get("run_gemini_task");
-  assert.equal(run.config.inputSchema.safeParse({ task: "x", workspace: "D:\\Repo", model: "bad" }).success, false);
+  assert.equal(run.config.inputSchema.safeParse({ task: "x", workspace: "D:\\Repo", model: "gemini-fast" }).success, true);
+  assert.equal(run.config.inputSchema.safeParse({ task: "x", workspace: "D:\\Repo", model: "bad\nmodel" }).success, false);
+  assert.equal(run.config.inputSchema.safeParse({ task: "x", workspace: "D:\\Repo", provider_url: "https://example.invalid" }).success, false);
   assert.equal(run.config.inputSchema.safeParse({ task: "x", workspace: "D:\\Repo" }).success, true);
 });
 
@@ -47,6 +56,142 @@ test("reports the job id early for a terminal run", async () => {
   );
   assert.deepEqual(seen[0].params.data, { jobId: "job_1" });
   assert.equal(result.structuredContent.status, "completed");
+});
+
+test("filters non-contract classified error details in MCP terminal results", async () => {
+  const core = {
+    async runGeminiTask(_request, hooks) {
+      await hooks.onStarted("job_error");
+      return {
+        jobId: "job_error", status: "failed",
+        error: {
+          category: "quota_exceeded", source: "unknown", code: "usageLimitExceeded", status: 429,
+          stage: "event", reason: "turn_failed", field: "codexErrorInfo",
+        },
+      };
+    },
+    getGeminiStatus() {}, async cancelGeminiTask() {},
+  };
+  const server = createGeminiMcpServer({ core, ServerClass: FakeServer });
+  const result = await server.tools.get("run_gemini_task").handler(
+    { task: "x", workspace: "D:\\Repo" }, { mcpReq: { requestState: () => undefined } },
+  );
+  assert.deepEqual(result.structuredContent.error, {
+    category: "quota_exceeded", source: "unknown", code: "usageLimitExceeded", status: 429,
+    stage: "event",
+  });
+});
+
+test("does not echo caller-controlled metadata through a direct MCP rejection", async () => {
+  const sentinel = "sentinel-untrusted-4829";
+  const core = {
+    async runGeminiTask(_request, hooks) {
+      await hooks.onStarted("job_direct_rejection");
+      throw Object.assign(new Error("secret"), {
+        code: "invalid_request", details: { field: "model", reason: sentinel, stage: sentinel },
+      });
+    },
+    getGeminiStatus() {}, async cancelGeminiTask() {},
+  };
+  const server = createGeminiMcpServer({ core, ServerClass: FakeServer });
+  const result = await server.tools.get("run_gemini_task").handler(
+    { task: "x", workspace: "D:\\Repo" }, { mcpReq: { requestState: () => undefined } },
+  );
+  assert.deepEqual(result.structuredContent.error, {
+    category: "invalid_request", source: "unknown", code: "invalid_request", field: "model",
+  });
+  assert.equal(JSON.stringify(result).includes(sentinel), false);
+});
+
+test("keeps a real local session diagnostic aligned across core, persisted restart, and MCP", async () => {
+  const files = new Map();
+  const store = createJobStateStore({
+    stateRoot: "C:\\runtime\\jobs", mkdirPath: async () => {},
+    writeFile: async (path, data) => files.set(path, data),
+    renamePath: async (from, to) => { files.set(to, files.get(from)); files.delete(from); },
+    readFile: async (path) => {
+      if (!files.has(path)) { const error = new Error("missing"); error.code = "ENOENT"; throw error; }
+      return files.get(path);
+    },
+    listDirectory: async () => ["job_local_session.json"], now: () => "now",
+  });
+  const session = createAppServerSessionAdapter({
+    model: "gemini-fixed",
+    client: { request: async () => ({ thread: { id: "" } }) },
+  });
+  const core = createGeminiCompanionCore({
+    validateRequest: async (request) => ({
+      task: request.task, workspace: request.workspace, effort: "medium", access: "read-only", timeoutMinutes: 30,
+    }),
+    compatibilityAdapter: { check: async () => ({ status: "compatible", warnings: [] }) },
+    workspaceLeases: createWorkspaceLeaseManager(), redactor: createCompanionRedactor(),
+    createRuntime: async () => ({
+      run: async () => session.startThread({ cwd: "D:\\Repo", sandbox: "read-only", approvalPolicy: "on-request" }),
+      cancel: async () => {}, dispose: async () => {},
+    }),
+    persistStatus: store.persist, generateJobId: () => "job_local_session",
+  });
+  const server = createGeminiMcpServer({ core, ServerClass: FakeServer });
+  const result = await server.tools.get("run_gemini_task").handler(
+    { task: "x", workspace: "D:\\Repo" }, { mcpReq: { requestState: () => undefined } },
+  );
+  const expected = {
+    category: "protocol_error", source: "unknown", stage: "response", reason: "invalid_thread_response",
+  };
+  assert.deepEqual(core.getGeminiStatus("job_local_session").error, expected);
+  assert.deepEqual(result.structuredContent.error, expected);
+  const recovered = await store.reconcile();
+  assert.deepEqual(recovered[0].error, expected);
+  const restarted = createGeminiCompanionCore({
+    validateRequest: async () => ({}), prepareRuntime: async () => ({ run: async () => ({}) }),
+    workspaceLeases: createWorkspaceLeaseManager(), redactor: createCompanionRedactor(), initialStatuses: recovered,
+  });
+  assert.deepEqual(restarted.getGeminiStatus("job_local_session").error, expected);
+});
+
+test("contains inherited-property JSONL codes through core cleanup and MCP", async () => {
+  const codes = ["toString", "constructor", "valueOf", "__proto__"];
+  let cancelled = 0;
+  let disposed = 0;
+  let next = 0;
+  const core = createGeminiCompanionCore({
+    validateRequest: async (request) => ({
+      task: request.task, workspace: request.workspace, effort: "medium", access: "read-only", timeoutMinutes: 30,
+    }),
+    compatibilityAdapter: { check: async () => ({ status: "compatible", warnings: [] }) },
+    workspaceLeases: createWorkspaceLeaseManager(), redactor: createCompanionRedactor(),
+    generateJobId: () => `job_jsonl_${++next}`,
+    createRuntime: async () => ({
+      async run() {
+        const readable = new PassThrough();
+        const writable = new PassThrough();
+        const client = createAppServerJsonlClient({ readable, writable });
+        const pending = client.request("turn/start", {});
+        readable.write(`${JSON.stringify({ id: 1, error: {
+          code: codes[next - 1], source: "provider", message: "secret body",
+        } })}\n`);
+        try {
+          await pending;
+          throw new Error("missing JSONL rejection");
+        } finally {
+          client.close();
+        }
+      },
+      cancel: async () => { cancelled += 1; },
+      dispose: async () => { disposed += 1; },
+    }),
+  });
+  const server = createGeminiMcpServer({ core, ServerClass: FakeServer });
+  for (const code of codes) {
+    const result = await server.tools.get("run_gemini_task").handler(
+      { task: "x", workspace: "D:\\Repo" }, { mcpReq: { requestState: () => undefined } },
+    );
+    assert.deepEqual(result.structuredContent.error, { category: "protocol_error", source: "provider" });
+    assert.equal(typeof result.structuredContent.error.category, "string");
+    assert.equal(JSON.stringify(result).includes(code), false);
+  }
+  assert.equal(cancelled, codes.length);
+  assert.equal(disposed, codes.length);
 });
 
 test("fails closed without starting a job when verified request state access throws", async () => {
@@ -126,6 +271,20 @@ function modernContext({ requestState, inputResponses } = {}) {
     pushCalls: () => pushElicitationCalls,
   };
 }
+
+test("binds approval continuation to the resolved configured model", async () => {
+  const approval = approvalCore();
+  approval.core.modelPolicy = Object.freeze({ defaultModel: "gemini-a", allowedModels: Object.freeze(["gemini-a", "gemini-b"]) });
+  const server = createGeminiMcpServer({ core: approval.core, ServerClass: FakeServer, generateCorrelationId: () => "capability_model" });
+  const run = server.tools.get("run_gemini_task").handler;
+  const first = await run({ task: "x", workspace: "D:\\Repo" }, modernContext().context);
+  const rejected = await run({ task: "x", workspace: "D:\\Repo", model: "gemini-b" }, modernContext({
+    requestState: first.requestState,
+    inputResponses: { approval: { action: "accept", content: { decision: "accept" } } },
+  }).context);
+  assert.equal(rejected.structuredContent.status, "failed");
+  assert.deepEqual(approval.decisions, ["cancel"]);
+});
 
 class NoElicitationServer extends FakeServer {
   constructor(...args) {

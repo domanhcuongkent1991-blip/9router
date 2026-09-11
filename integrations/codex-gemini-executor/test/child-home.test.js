@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { createChildHomeManager } from "../src/child-home.js";
 
-test("writes fixed isolated config atomically without credentials or parent capabilities", async () => {
+test("writes model-specific isolated config atomically without credentials or parent capabilities", async () => {
   const writes = [];
   const renames = [];
   const manager = createChildHomeManager({
@@ -12,11 +12,12 @@ test("writes fixed isolated config atomically without credentials or parent capa
     writeFile: async (path, data) => writes.push([path, data]),
     renamePath: async (...args) => renames.push(args),
   });
-  const result = await manager.prepare({ PATH: "fixed", NINEROUTER_API_KEY: "SECRET" });
+  const result = await manager.prepare({ PATH: "fixed", NINEROUTER_API_KEY: "SECRET" }, "gemini-fast");
   assert.equal(result.environment.NINEROUTER_GEMINI_CHILD, "1");
   assert.equal(result.environment.NINEROUTER_API_KEY, "SECRET");
   assert.equal(writes.length, 1);
   assert.equal(writes[0][1].includes("SECRET"), false);
+  assert.match(writes[0][1], /^model = "gemini-fast"$/mu);
   assert.match(writes[0][1], /env_key = "NINEROUTER_API_KEY"/u);
   assert.match(writes[0][1], /wire_api = "responses"/u);
   assert.match(writes[0][1], /^web_search = "disabled"$/mu);
@@ -35,7 +36,7 @@ test("prevents recursive companion execution", async () => {
     runtimeRoot: "C:\\Users\\Admin\\Documents\\Codex\\9router-gemini-runtime",
     mkdirPath: async () => {}, writeFile: async () => {}, renamePath: async () => {},
   });
-  await assert.rejects(manager.prepare({ NINEROUTER_GEMINI_CHILD: "1" }), { code: "recursive_child_blocked" });
+  await assert.rejects(manager.prepare({ NINEROUTER_GEMINI_CHILD: "1" }, "gemini-fast"), { code: "recursive_child_blocked" });
 });
 
 test("serializes shared config preparation so temporary writes cannot race", async () => {
@@ -53,8 +54,8 @@ test("serializes shared config preparation so temporary writes cannot race", asy
     },
     renamePath: async () => {},
   });
-  const first = manager.prepare({ PATH: "fixed" });
-  const second = manager.prepare({ PATH: "fixed" });
+  const first = manager.prepare({ PATH: "fixed" }, "gemini-first");
+  const second = manager.prepare({ PATH: "fixed" }, "gemini-second");
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(release.length, 1);
   release.shift()();
@@ -63,4 +64,14 @@ test("serializes shared config preparation so temporary writes cannot race", asy
   release.shift()();
   await Promise.all([first, second]);
   assert.equal(maximumActiveWrites, 1);
+});
+
+test("rejects an unsafe per-job model before writing child configuration", async () => {
+  let writes = 0;
+  const manager = createChildHomeManager({
+    runtimeRoot: "C:\\Users\\Admin\\Documents\\Codex\\9router-gemini-runtime",
+    mkdirPath: async () => {}, writeFile: async () => { writes += 1; }, renamePath: async () => {},
+  });
+  await assert.rejects(manager.prepare({ PATH: "fixed" }, "unsafe\nmodel"), { code: "child_home_error" });
+  assert.equal(writes, 0);
 });

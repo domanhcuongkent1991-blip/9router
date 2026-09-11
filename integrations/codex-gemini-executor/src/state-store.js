@@ -1,4 +1,5 @@
 import { win32 } from "node:path";
+import { normalizePublicError } from "./error-classification.js";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const STATUSES = new Set(["starting", "running", "awaiting_approval", ...TERMINAL]);
@@ -25,10 +26,10 @@ function minimal(snapshot, revision, updatedAt) {
     ...(typeof snapshot.workspace === "string" ? { workspace: snapshot.workspace } : {}),
     ...(Object.hasOwn(snapshot, "worktreePath") ? { worktreePath: snapshot.worktreePath ?? null } : {}),
     ...(typeof snapshot.sessionId === "string" ? { sessionId: snapshot.sessionId } : {}),
+    ...(typeof snapshot.model === "string" && Buffer.byteLength(snapshot.model, "utf8") <= 256 ? { model: snapshot.model } : {}),
     updatedAt,
   };
-  const category = snapshot.error?.category;
-  if (typeof category === "string") output.error = { category };
+  if (snapshot.error !== undefined) output.error = normalizePublicError(snapshot.error);
   const json = JSON.stringify(output);
   if (Buffer.byteLength(json, "utf8") > MAX_STATE_BYTES) throw new JobStateError("state_error", "state_too_large");
   return output;

@@ -35,7 +35,7 @@ export class ChildHomeError extends Error {
   }
 }
 
-export function createChildHomeManager({ runtimeRoot, mkdirPath, writeFile, renamePath, fixedModel = "gemini-fixed" }) {
+export function createChildHomeManager({ runtimeRoot, mkdirPath, writeFile, renamePath }) {
   if (typeof runtimeRoot !== "string" || !win32.isAbsolute(runtimeRoot)
     || typeof mkdirPath !== "function" || typeof writeFile !== "function" || typeof renamePath !== "function") {
     throw new ChildHomeError("child_home_error", "invalid_configuration");
@@ -43,15 +43,22 @@ export function createChildHomeManager({ runtimeRoot, mkdirPath, writeFile, rena
   const codexHome = win32.join(runtimeRoot, "codex-home");
   const configPath = win32.join(codexHome, "config.toml");
   const tempPath = `${configPath}.tmp`;
-  const config = configFor(fixedModel);
   let preparation = Promise.resolve();
 
-  function prepare(environment) {
+  function prepare(environment, model) {
     if (environment === null || typeof environment !== "object" || Array.isArray(environment)) {
       return Promise.reject(new ChildHomeError("child_home_error", "invalid_environment"));
     }
     if (environment[CHILD_MARKER] === "1") {
       return Promise.reject(new ChildHomeError("recursive_child_blocked", "recursion_marker_present"));
+    }
+    let config;
+    try {
+      config = configFor(model);
+    } catch (error) {
+      return Promise.reject(error instanceof ChildHomeError
+        ? error
+        : new ChildHomeError("child_home_error", "invalid_model"));
     }
     const childEnvironment = Object.freeze({ ...environment, [CHILD_MARKER]: "1" });
     const operation = preparation.then(async () => {

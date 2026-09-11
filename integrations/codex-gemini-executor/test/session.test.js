@@ -6,7 +6,7 @@ import {
   createAppServerSessionAdapter,
 } from "../src/app-server/session.js";
 
-const fixed = { fixedModel: "gemini-fixed", fixedModelProvider: "nine_router" };
+const fixed = { model: "gemini-fixed" };
 const threadPolicy = { cwd: "C:\\workspace", sandbox: "workspace-write", approvalPolicy: "on-request" };
 
 function fixture(responses = {}) {
@@ -21,7 +21,7 @@ function fixture(responses = {}) {
   return { calls, session: createAppServerSessionAdapter({ client, ...fixed }) };
 }
 
-test("sends exact fixed-policy requests for all session commands", async () => {
+test("sends exact model-bound policy requests for all session commands", async () => {
   const { calls, session } = fixture({
     "thread/start": { thread: { id: "thr_1" } },
     "thread/resume": { thread: { id: "thr_1" } },

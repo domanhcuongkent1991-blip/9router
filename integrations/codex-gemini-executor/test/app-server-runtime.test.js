@@ -5,6 +5,16 @@ import { PassThrough } from "node:stream";
 
 import { APP_SERVER_REQUIRED_METHODS } from "../src/app-server/compatibility.js";
 import { prepareAppServerRuntime } from "../src/app-server/runtime.js";
+import { createGeminiCompanionCore } from "../src/core.js";
+import { classifyCompanionError } from "../src/error-classification.js";
+import { createGeminiMcpServer } from "../src/mcp-bridge.js";
+import { createCompanionRedactor } from "../src/redaction.js";
+import { createWorkspaceLeaseManager } from "../src/workspace-lease.js";
+
+class FakeServer {
+  constructor() { this.tools = new Map(); }
+  registerTool(name, config, handler) { this.tools.set(name, { config, handler }); }
+}
 
 function fakeChild() {
   const child = new EventEmitter();
@@ -55,7 +65,7 @@ function options(child, overrides = {}) {
     baseline: { version: "1.0.0", executableSha256: "b".repeat(64) },
     clientInfo: { name: "nine_router_gemini", title: "9Router Gemini", version: "0.1.0" },
     schemaQualification: { schemaSubsetCompatible: true, methods: Object.fromEntries(APP_SERVER_REQUIRED_METHODS.map((name) => [name, true])) },
-    fixedModel: "gemini-fixed", fixedModelProvider: "nine_router",
+    model: "gemini-fixed",
     sanitizeForDisplay: (value) => value,
     ...overrides,
   };
@@ -68,7 +78,7 @@ test("qualifies and runs the same fake App Server process through normalized eve
   const runtime = await prepareAppServerRuntime(options(child, { onWarning: (warning) => warnings.push(warning.code) }));
   const events = [];
   const running = runtime.run({
-    request: { task: "inspect", effort: "medium", access: "read-only" },
+    request: { task: "inspect", effort: "medium", access: "read-only", model: "gemini-fixed" },
     executionWorkspace: "D:\\Repo", onEvent: async (event) => events.push(event),
     requestDecision: async () => "accept",
   });
@@ -81,6 +91,9 @@ test("qualifies and runs the same fake App Server process through normalized eve
   assert.deepEqual(frames.filter((frame) => Object.hasOwn(frame, "id")).map((frame) => frame.method), [
     "initialize", "model/list", "thread/start", "turn/start",
   ]);
+  assert.deepEqual(frames.filter((frame) => ["thread/start", "turn/start"].includes(frame.method)).map((frame) => frame.params.model), [
+    "gemini-fixed", "gemini-fixed",
+  ]);
   assert.deepEqual(events.map((event) => event.type), ["turn_started", "assistant_delta", "turn_completed"]);
   assert.deepEqual(warnings, ["codex_version_changed", "codex_executable_changed"]);
   await runtime.dispose();
@@ -91,7 +104,7 @@ test("relays approval once and fails closed when elicitation is unavailable", as
   const runtime = await prepareAppServerRuntime(options(child));
   const events = [];
   const running = runtime.run({
-    request: { task: "change", effort: "high", access: "workspace-write" },
+    request: { task: "change", effort: "high", access: "workspace-write", model: "gemini-fixed" },
     executionWorkspace: "C:\\jobs\\job_1", onEvent: async (event) => events.push(event),
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -130,7 +143,7 @@ test("fails closed when an early turn event disagrees with the turn/start respon
   });
   const runtime = await prepareAppServerRuntime(options(child));
   await assert.rejects(runtime.run({
-    request: { task: "inspect", effort: "medium", access: "read-only" },
+    request: { task: "inspect", effort: "medium", access: "read-only", model: "gemini-fixed" },
     executionWorkspace: "D:\\Repo", onEvent: async () => {}, requestDecision: async () => "accept",
   }), (error) => error.code === "app_server_incompatible" && error.details.reason === "turn_start_mismatch");
   await runtime.dispose().catch(() => {});
@@ -143,7 +156,7 @@ test("sanitizes split-secret deltas before retaining the final answer", async ()
     sanitizeForDisplay: (value) => value.replaceAll(secret, "[REDACTED]"),
   }));
   const running = runtime.run({
-    request: { task: "inspect", effort: "medium", access: "read-only" }, executionWorkspace: "D:\\Repo",
+    request: { task: "inspect", effort: "medium", access: "read-only", model: "gemini-fixed" }, executionWorkspace: "D:\\Repo",
     onEvent: async () => {}, requestDecision: async () => "accept",
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -185,4 +198,195 @@ test("generates schema and launches from the exact canonical observed executable
   assert.deepEqual(schemaObservations, [canonical]);
   assert.deepEqual(launches, [canonical]);
   await runtime.dispose();
+});
+
+test("rejects a request whose resolved model differs from its model-bound runtime", async () => {
+  const child = fakeChild(); protocolHarness(child);
+  const runtime = await prepareAppServerRuntime(options(child, { model: "gemini-a" }));
+  await assert.rejects(runtime.run({
+    request: { task: "inspect", effort: "medium", access: "read-only", model: "gemini-b" },
+    executionWorkspace: "D:\\Repo", onEvent: async () => {}, requestDecision: async () => "accept",
+  }), { code: "app_server_incompatible" });
+  await runtime.dispose();
+});
+
+test("preserves the finite diagnostic from an actual unavailable runtime", async () => {
+  const child = fakeChild(); protocolHarness(child);
+  const runtime = await prepareAppServerRuntime(options(child));
+  await runtime.dispose();
+  await assert.rejects(runtime.run({
+    request: { task: "inspect", effort: "medium", access: "read-only", model: "gemini-fixed" },
+    executionWorkspace: "D:\\Repo", onEvent: async () => {}, requestDecision: async () => "accept",
+  }), (error) => {
+    assert.deepEqual(classifyCompanionError(error), {
+      category: "app_server_incompatible", source: "unknown", code: "app_server_incompatible",
+      stage: "runtime", reason: "runtime_unavailable",
+    });
+    return true;
+  });
+});
+
+test("retains a terminal notification's safe error when failed completion metadata is empty", async () => {
+  for (const completionError of [undefined, { message: "synthetic" }, { message: "synthetic", codexErrorInfo: null }]) {
+    const child = fakeChild(); protocolHarness(child);
+    const runtime = await prepareAppServerRuntime(options(child));
+    const secret = "app-server-turn-secret";
+    const events = [];
+    const running = runtime.run({
+      request: { task: "inspect", effort: "medium", access: "read-only", model: "gemini-fixed" },
+      executionWorkspace: "D:\\Repo", onEvent: async (event) => events.push(event), requestDecision: async () => "accept",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    child.stdout.write(`${JSON.stringify({ method: "error", params: {
+      threadId: "thr_1", turnId: "turn_1", willRetry: false,
+      error: { message: secret, additionalDetails: secret, codexErrorInfo: "usageLimitExceeded" },
+    } })}\n`);
+    child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: {
+      threadId: "thr_1", turn: { id: "turn_1", status: "failed", items: [], ...(completionError === undefined ? {} : { error: completionError }) },
+    } })}\n`);
+    await assert.rejects(running, (error) => (
+      error.code === "app_server_turn_error"
+      && error.details.remoteCode === "usageLimitExceeded"
+      && error.details.remoteSource === "unknown"
+      && !JSON.stringify(error).includes(secret)
+    ));
+    assert.deepEqual(events.map((event) => event.type), ["turn_error", "turn_completed"]);
+    await runtime.dispose();
+  }
+});
+
+test("uses useful completion metadata without mixing a prior terminal error", async () => {
+  const child = fakeChild(); protocolHarness(child);
+  const runtime = await prepareAppServerRuntime(options(child));
+  const running = runtime.run({
+    request: { task: "inspect", effort: "medium", access: "read-only", model: "gemini-fixed" },
+    executionWorkspace: "D:\\Repo", onEvent: async () => {}, requestDecision: async () => "accept",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  child.stdout.write(`${JSON.stringify({ method: "error", params: {
+    threadId: "thr_1", turnId: "turn_1", willRetry: false,
+    error: { message: "hidden", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } },
+  } })}\n`);
+  child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: {
+    threadId: "thr_1", turn: {
+      id: "turn_1", status: "failed", items: [],
+      error: { message: "hidden", codexErrorInfo: "rateLimitExceeded" },
+    },
+  } })}\n`);
+  await assert.rejects(running, (error) => error.code === "app_server_turn_error"
+    && error.details.remoteCode === "rateLimitExceeded" && error.details.remoteStatus === undefined);
+  await runtime.dispose();
+});
+
+test("does not fail early for a retryable error notification followed by success", async () => {
+  const child = fakeChild(); protocolHarness(child);
+  const runtime = await prepareAppServerRuntime(options(child));
+  const running = runtime.run({
+    request: { task: "inspect", effort: "medium", access: "read-only", model: "gemini-fixed" },
+    executionWorkspace: "D:\\Repo", onEvent: async () => {}, requestDecision: async () => "accept",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  child.stdout.write(`${JSON.stringify({ method: "error", params: {
+    threadId: "thr_1", turnId: "turn_1", willRetry: true,
+    error: { message: "retry", codexErrorInfo: "rateLimitExceeded" },
+  } })}\n`);
+  child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: {
+    threadId: "thr_1", turn: { id: "turn_1", status: "completed", items: [] },
+  } })}\n`);
+  assert.equal((await running).sessionId, "thr_1");
+  await runtime.dispose();
+});
+
+test("keeps a failed turn uncertain when only a retryable error preceded empty completion metadata", async () => {
+  const child = fakeChild(); protocolHarness(child);
+  const runtime = await prepareAppServerRuntime(options(child));
+  const running = runtime.run({
+    request: { task: "inspect", effort: "medium", access: "read-only", model: "gemini-fixed" },
+    executionWorkspace: "D:\\Repo", onEvent: async () => {}, requestDecision: async () => "accept",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  child.stdout.write(`${JSON.stringify({ method: "error", params: {
+    threadId: "thr_1", turnId: "turn_1", willRetry: true,
+    error: { message: "retry", codexErrorInfo: "usageLimitExceeded" },
+  } })}\n`);
+  child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: {
+    threadId: "thr_1", turn: { id: "turn_1", status: "failed", items: [], error: { message: "synthetic" } },
+  } })}\n`);
+  await assert.rejects(running, (error) => error.code === "app_server_turn_error"
+    && error.details.remoteCode === undefined && error.details.remoteStatus === undefined);
+  await runtime.dispose();
+});
+
+test("uses a failed completion's embedded error when no error notification arrives", async () => {
+  const child = fakeChild(); protocolHarness(child);
+  const runtime = await prepareAppServerRuntime(options(child));
+  const running = runtime.run({
+    request: { task: "inspect", effort: "medium", access: "read-only", model: "gemini-fixed" },
+    executionWorkspace: "D:\\Repo", onEvent: async () => {}, requestDecision: async () => "accept",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: {
+    threadId: "thr_1", turn: {
+      id: "turn_1", status: "failed", items: [],
+      error: { message: "hidden", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } },
+    },
+  } })}\n`);
+  await assert.rejects(running, (error) => error.code === "app_server_turn_error"
+    && error.details.remoteCode === "httpConnectionFailed" && error.details.remoteStatus === 503);
+  await runtime.dispose();
+});
+
+test("fails closed and disposes after a foreign or malformed terminal error event", async () => {
+  for (const notification of [
+    { method: "error", params: { threadId: "foreign", turnId: "turn_1", willRetry: false, error: { message: "hidden" } } },
+    { method: "error", params: { threadId: "thr_1", turnId: "turn_1", willRetry: false, error: { message: "hidden", codexErrorInfo: "invalid" } } },
+  ]) {
+    const child = fakeChild(); protocolHarness(child);
+    const runtime = await prepareAppServerRuntime(options(child));
+    const running = runtime.run({
+      request: { task: "inspect", effort: "medium", access: "read-only", model: "gemini-fixed" },
+      executionWorkspace: "D:\\Repo", onEvent: async () => {}, requestDecision: async () => "accept",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    child.stdout.write(`${JSON.stringify(notification)}\n`);
+    await assert.rejects(running, { code: "app_server_incompatible" });
+    await runtime.dispose();
+    assert.equal(child.exitCode, 0);
+  }
+});
+
+test("carries a failed App Server turn's safe error through core persistence, MCP, and cleanup", async () => {
+  const child = fakeChild();
+  const frames = protocolHarness(child);
+  const runtime = await prepareAppServerRuntime(options(child));
+  const persisted = [];
+  const core = createGeminiCompanionCore({
+    validateRequest: async () => ({
+      task: "inspect", workspace: "D:\\Repo", effort: "medium", access: "read-only", timeoutMinutes: 30, model: "gemini-fixed",
+    }),
+    prepareRuntime: async () => runtime,
+    workspaceLeases: createWorkspaceLeaseManager(), redactor: createCompanionRedactor(),
+    persistStatus: async (snapshot) => persisted.push(structuredClone(snapshot)), generateJobId: () => "job_turn_error",
+  });
+  const server = createGeminiMcpServer({ core, ServerClass: FakeServer });
+  const running = server.tools.get("run_gemini_task").handler(
+    { task: "inspect", workspace: "D:\\Repo" }, { mcpReq: { requestState: () => undefined } },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  child.stdout.write(`${JSON.stringify({ method: "error", params: {
+    threadId: "thr_1", turnId: "turn_1", willRetry: false,
+    error: { message: "secret", codexErrorInfo: "usageLimitExceeded" },
+  } })}\n`);
+  child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: {
+    threadId: "thr_1", turn: { id: "turn_1", status: "failed", items: [], error: { message: "synthetic", codexErrorInfo: null } },
+  } })}\n`);
+  const result = await running;
+  const terminal = core.getGeminiStatus("job_turn_error");
+  assert.deepEqual(terminal.error, {
+    category: "quota_exceeded", source: "unknown", code: "usageLimitExceeded",
+  });
+  assert.deepEqual(result.structuredContent.error, terminal.error);
+  assert.deepEqual(persisted.at(-1).error, terminal.error);
+  assert.equal(frames.some((frame) => frame.method === "turn/interrupt"), true);
+  assert.equal(child.exitCode, 0);
 });

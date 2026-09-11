@@ -9,10 +9,30 @@ import {
 } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
+import {
+  PUBLIC_ERROR_CATEGORIES,
+  PUBLIC_ERROR_CODES,
+  PUBLIC_ERROR_FIELDS,
+  PUBLIC_ERROR_REASONS,
+  PUBLIC_ERROR_SOURCES,
+  PUBLIC_ERROR_STAGES,
+  classifyCompanionError,
+  normalizePublicError,
+} from "./error-classification.js";
+
 const decisionSchema = z.enum(["accept", "decline", "cancel"]);
 const decisionObjectSchema = z.object({ decision: decisionSchema }).strict();
 const jobIdSchema = z.string().min(1).max(512);
 const statusSchema = z.enum(["starting", "running", "awaiting_approval", "completed", "failed", "cancelled"]);
+const errorSchema = z.object({
+  category: z.enum(PUBLIC_ERROR_CATEGORIES),
+  source: z.enum(PUBLIC_ERROR_SOURCES),
+  code: z.enum(PUBLIC_ERROR_CODES).optional(),
+  status: z.number().int().min(100).max(599).optional(),
+  stage: z.enum(PUBLIC_ERROR_STAGES).optional(),
+  reason: z.enum(PUBLIC_ERROR_REASONS).optional(),
+  field: z.enum(PUBLIC_ERROR_FIELDS).optional(),
+}).strict();
 const resultSchema = z.object({
   jobId: jobIdSchema,
   status: statusSchema,
@@ -27,6 +47,7 @@ const resultSchema = z.object({
   output: z.string().max(32_768).optional(),
   access: z.enum(["read-only", "workspace-write"]).optional(),
   effort: z.enum(["low", "medium", "high"]).optional(),
+  model: z.string().regex(/^[A-Za-z0-9._:/-]{1,256}$/u).optional(),
   compatibilityWarnings: z.array(z.object({ code: z.string().max(128) }).passthrough()).max(16).optional(),
   approval: z.object({
     type: z.enum(["command", "file_change"]),
@@ -39,11 +60,14 @@ const resultSchema = z.object({
     reason: z.string().max(16_384).nullable().optional(),
     decisions: z.tuple([z.literal("accept"), z.literal("decline"), z.literal("cancel")]),
   }).strict().optional(),
-  error: z.object({ category: z.string().max(128) }).passthrough().optional(),
+  error: errorSchema.optional(),
 }).strict();
 
 function toolResult(value) {
-  const parsed = resultSchema.parse(value);
+  const normalized = value !== null && typeof value === "object" && Object.hasOwn(value, "error")
+    ? { ...value, error: normalizePublicError(value.error) }
+    : value;
+  const parsed = resultSchema.parse(normalized);
   return {
     content: [{ type: "text", text: JSON.stringify(parsed) }],
     structuredContent: parsed,
@@ -57,12 +81,16 @@ function deferred() {
   return { promise, resolve };
 }
 
-function requestFingerprint(request) {
+function requestFingerprint(request, modelPolicy) {
+  const model = modelPolicy?.allowedModels?.includes(request.model ?? modelPolicy.defaultModel)
+    ? request.model ?? modelPolicy.defaultModel
+    : request.model ?? null;
   return createHash("sha256").update(JSON.stringify([
     request.task,
     request.workspace,
     request.effort ?? "medium",
     request.access ?? "read-only",
+    model,
     request.session_id ?? null,
     request.timeout_minutes ?? 30,
   ])).digest("hex");
@@ -131,7 +159,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
 
   function startRun(request, context) {
     const pending = {
-      fingerprint: requestFingerprint(request),
+      fingerprint: requestFingerprint(request, core.modelPolicy),
       jobId: null,
       tokens: new Set(),
       currentApproval: null,
@@ -159,8 +187,9 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
       },
     })).then(
       (result) => ({ type: "terminal", result }),
-      (error) => ({ type: "terminal", result: { jobId: pending.jobId ?? "job_unavailable", status: "failed",
-        error: { category: ["workspace_locked", "app_server_incompatible", "invalid_request"].includes(error?.code) ? error.code : "protocol_error" } } }),
+      (error) => ({ type: "terminal", result: {
+        jobId: pending.jobId ?? "job_unavailable", status: "failed", error: classifyCompanionError(error),
+      } }),
     );
     pending.completion.then(() => cleanupPending(pending));
     return pending;
@@ -209,7 +238,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
       if (!pending) throw new Error("invalid_approval_correlation");
       pendingByToken.delete(state);
       pending.tokens.delete(state);
-      if (pending.fingerprint !== requestFingerprint(request) || !pending.currentApproval) return failPending(pending);
+      if (pending.fingerprint !== requestFingerprint(request, core.modelPolicy) || !pending.currentApproval) return failPending(pending);
 
       const response = inputResponse(context?.mcpReq?.inputResponses, "approval");
       let decision;
@@ -276,6 +305,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
       workspace: z.string().min(3).max(4096),
       effort: z.enum(["low", "medium", "high"]).optional(),
       access: z.enum(["read-only", "workspace-write"]).optional(),
+      model: z.string().regex(/^[A-Za-z0-9._:/-]{1,256}$/u).optional(),
       session_id: z.string().min(1).max(512).optional(),
       timeout_minutes: z.number().int().min(1).max(120).optional(),
     }).strict(),

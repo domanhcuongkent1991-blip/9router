@@ -17,7 +17,7 @@ import {
 import { createChildHomeManager } from "./child-home.js";
 import { createGeminiCompanionCore } from "./core.js";
 import { createCompanionRedactor } from "./redaction.js";
-import { validateGeminiRequest } from "./request.js";
+import { isSafeModelIdentifier, validateGeminiRequest } from "./request.js";
 import { createJobStateStore } from "./state-store.js";
 import { createWorkspaceLeaseManager } from "./workspace-lease.js";
 import { createWorkspaceManager } from "./workspace.js";
@@ -44,7 +44,10 @@ export async function observeInstalledCombination(config, { read = readFile, obs
     node: { path: process.execPath, version: process.version },
     companionSha256: await digestSource(sourceDirectory),
     dependencyLockSha256: createHash("sha256").update(await read(win32.join(sourceDirectory, "..", "package-lock.json"))).digest("hex"),
-    router: await routerIdentity(), model: config.fixedModel,
+    router: await routerIdentity(),
+    provider: "nine_router",
+    model: config.fixedModel,
+    allowedModels: config.allowedModels,
   };
   return { observation, identity };
 }
@@ -77,6 +80,20 @@ function storageRoot(environment, name, fallback) {
   return normalized;
 }
 
+function modelAllowlist(environment, defaultModel) {
+  if (environment.NINEROUTER_GEMINI_MODELS === undefined) return Object.freeze([defaultModel]);
+  const raw = environment.NINEROUTER_GEMINI_MODELS;
+  if (typeof raw !== "string" || Buffer.byteLength(raw, "utf8") > 16 * 1024) {
+    throw new InstallationConfigError("invalid_model_allowlist");
+  }
+  const models = raw.split(";").map((value) => value.trim());
+  if (models.length === 0 || models.length > 64 || models.some((model) => !isSafeModelIdentifier(model))
+    || new Set(models).size !== models.length || !models.includes(defaultModel)) {
+    throw new InstallationConfigError("invalid_model_allowlist");
+  }
+  return Object.freeze([...models].sort((left, right) => left.localeCompare(right, "en")));
+}
+
 export function readInstallationConfig(environment = process.env) {
   const runtimeRoot = storageRoot(environment, "NINEROUTER_RUNTIME_ROOT", RUNTIME_ROOT);
   const worktreeRoot = storageRoot(environment, "NINEROUTER_WORKTREE_ROOT", WORKTREE_ROOT);
@@ -89,15 +106,16 @@ export function readInstallationConfig(environment = process.env) {
   const version = required(environment, "NINEROUTER_CODEX_BASELINE_VERSION", 4096);
   const executableSha256 = required(environment, "NINEROUTER_CODEX_BASELINE_SHA256", 64).toLowerCase();
   const fixedModel = required(environment, "NINEROUTER_GEMINI_MODEL", 256);
+  const allowedModels = modelAllowlist(environment, fixedModel);
   const apiKey = required(environment, "NINEROUTER_API_KEY", 16 * 1024);
   const roots = required(environment, "NINEROUTER_PERMITTED_WORKSPACES", 32 * 1024)
     .split(";").map((value) => value.trim()).filter(Boolean);
   if (!win32.isAbsolute(executablePath) || !win32.isAbsolute(allowedExecutableRoot)
-    || !SHA256.test(executableSha256) || !/^[A-Za-z0-9._:/-]{1,256}$/u.test(fixedModel)
+    || !SHA256.test(executableSha256) || !isSafeModelIdentifier(fixedModel)
     || roots.length === 0 || roots.length > 64 || roots.some((root) => !win32.isAbsolute(root))) {
     throw new InstallationConfigError("invalid_value");
   }
-  return Object.freeze({ executablePath, allowedExecutableRoot, fixedModel, apiKey, runtimeRoot, worktreeRoot, permittedWorkspaceRoots: roots,
+  return Object.freeze({ executablePath, allowedExecutableRoot, fixedModel, allowedModels, apiKey, runtimeRoot, worktreeRoot, permittedWorkspaceRoots: roots,
     baseline: Object.freeze({ version, executableSha256 }) });
 }
 
@@ -148,7 +166,7 @@ export async function createInstalledGeminiCompanion({ environment = process.env
   const stateStore = createJobStateStore({ stateRoot: win32.join(config.runtimeRoot, "jobs"), ...fsApi });
   const recovered = await stateStore.reconcile();
   const redactor = createCompanionRedactor({ knownSecrets: [config.apiKey] });
-  const childHome = createChildHomeManager({ runtimeRoot: config.runtimeRoot, ...fsApi, fixedModel: config.fixedModel });
+  const childHome = createChildHomeManager({ runtimeRoot: config.runtimeRoot, ...fsApi });
   const workspaceManager = createWorkspaceManager({ worktreeRoot: config.worktreeRoot, execFile: execFileSafe, ...fsApi });
   const executionOwner = dependencies.executionOwner ?? createExecutionOwner({ directory: config.runtimeRoot });
   const sessions = dependencies.sessions ?? createSessionStore({ directory: win32.join(config.runtimeRoot, "sessions") });
@@ -179,7 +197,7 @@ export async function createInstalledGeminiCompanion({ environment = process.env
   const prepareRuntime = async ({ jobId, request }) => {
     currentQualification = await qualify();
     if (request.sessionId) request.resumeContext = await sessions.load(request.sessionId, request, currentQualification.fingerprint);
-    const isolated = await childHome.prepare(childEnvironment(environment, config.apiKey));
+    const isolated = await childHome.prepare(childEnvironment(environment, config.apiKey), request.model);
     const schemaDirectory = win32.join(config.worktreeRoot, `${jobId}-schema`);
     return prepareAppServerRuntime({
       executablePath: config.executablePath,
@@ -203,8 +221,7 @@ export async function createInstalledGeminiCompanion({ environment = process.env
           readSchemaFile: fsApi.readFile,
         });
       },
-      fixedModel: config.fixedModel,
-      fixedModelProvider: "nine_router",
+      model: request.model,
       sanitizeForDisplay: redactor.sanitizeForDisplay,
     });
   };
@@ -213,6 +230,8 @@ export async function createInstalledGeminiCompanion({ environment = process.env
     validateRequest: async (request) => {
       const validated = await validateGeminiRequest(request, {
       permittedWorkspaceRoots: config.permittedWorkspaceRoots,
+      defaultModel: config.fixedModel,
+      allowedModels: config.allowedModels,
       realpathPath: fsApi.realpathPath,
       statPath: fsApi.statPath,
       });
@@ -227,6 +246,7 @@ export async function createInstalledGeminiCompanion({ environment = process.env
   });
   const localJobs = new Set();
   return Object.freeze({
+    modelPolicy: Object.freeze({ defaultModel: config.fixedModel, allowedModels: config.allowedModels }),
     async runGeminiTask(request, hooks = {}) {
       const owner = await executionOwner.acquire();
       let cleanupConfirmed = true;

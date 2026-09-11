@@ -22,6 +22,7 @@ const expectedRefs = {
 const expectedNotificationRefs = {
   "turn/started": "#/definitions/TurnStartedNotification",
   "item/agentMessage/delta": "#/definitions/AgentMessageDeltaNotification",
+  error: "#/definitions/ErrorNotification",
   "turn/completed": "#/definitions/TurnCompletedNotification",
 };
 
@@ -31,7 +32,7 @@ const expectedApprovalRefs = {
 };
 
 function objectDefinition(properties, required = []) {
-  return { type: "object", properties, required };
+  return { type: "object", properties, required, additionalProperties: false };
 }
 
 function stableDefinitions() {
@@ -73,7 +74,7 @@ function stableDefinitions() {
     }, ["threadId", "turnId"]),
     TurnStartedNotification: objectDefinition({
       threadId: { type: "string" },
-      turn: { type: "object" },
+      turn: { $ref: "#/definitions/Turn" },
     }, ["threadId", "turn"]),
     AgentMessageDeltaNotification: objectDefinition({
       threadId: { type: "string" },
@@ -81,10 +82,39 @@ function stableDefinitions() {
       itemId: { type: "string" },
       delta: { type: "string" },
     }, ["threadId", "turnId", "itemId", "delta"]),
+    ErrorNotification: objectDefinition({
+      error: { $ref: "#/definitions/TurnError" },
+      threadId: { type: "string" },
+      turnId: { type: "string" },
+      willRetry: { type: "boolean" },
+    }, ["error", "threadId", "turnId", "willRetry"]),
     TurnCompletedNotification: objectDefinition({
       threadId: { type: "string" },
-      turn: { type: "object" },
+      turn: { $ref: "#/definitions/Turn" },
     }, ["threadId", "turn"]),
+    CodexErrorInfo: {
+      oneOf: [
+        { type: "string", enum: [
+          "contextWindowExceeded", "sessionBudgetExceeded", "usageLimitExceeded", "rateLimitExceeded", "serverOverloaded",
+          "cyberPolicy", "misalignmentPolicyViolation", "internalServerError", "unauthorized", "badRequest",
+          "threadRollbackFailed", "sandboxError", "other",
+        ] },
+        objectDefinition({ httpConnectionFailed: objectDefinition({ httpStatusCode: { type: ["integer", "null"] } }) }, ["httpConnectionFailed"]),
+        objectDefinition({ responseStreamConnectionFailed: objectDefinition({ httpStatusCode: { type: ["integer", "null"] } }) }, ["responseStreamConnectionFailed"]),
+        objectDefinition({ responseStreamDisconnected: objectDefinition({ httpStatusCode: { type: ["integer", "null"] } }) }, ["responseStreamDisconnected"]),
+        objectDefinition({ responseTooManyFailedAttempts: objectDefinition({ httpStatusCode: { type: ["integer", "null"] } }) }, ["responseTooManyFailedAttempts"]),
+        objectDefinition({ activeTurnNotSteerable: objectDefinition({ turnKind: { type: "string", enum: ["review", "compact"] } }, ["turnKind"]) }, ["activeTurnNotSteerable"]),
+      ],
+    },
+    TurnError: objectDefinition({
+      message: { type: "string" },
+      codexErrorInfo: { anyOf: [{ $ref: "#/definitions/CodexErrorInfo" }, { type: "null" }] },
+    }, ["message"]),
+    Turn: objectDefinition({
+      id: { type: "string" }, items: { type: "array" },
+      status: { type: "string", enum: ["inProgress", "completed", "interrupted", "failed"] },
+      error: { anyOf: [{ $ref: "#/definitions/TurnError" }, { type: "null" }] },
+    }, ["id", "items", "status"]),
   };
 }
 
@@ -313,6 +343,82 @@ test("allows additive optional and unrelated definition fields", () => {
   assert.equal(qualifyStableSchemaBundle(additive).schemaSubsetCompatible, true);
 });
 
+test("requires the consumed nested TurnError contract for error notifications and failed turns", () => {
+  assert.equal(qualifyStableSchemaBundle(schema()).schemaSubsetCompatible, true);
+  for (const mutate of [
+    (bundle) => { bundle.definitions.TurnError.properties.message = { type: "number" }; },
+    (bundle) => { bundle.definitions.TurnError.required = []; },
+    (bundle) => { bundle.definitions.TurnError.properties.codexErrorInfo = { type: "number" }; },
+    (bundle) => { bundle.definitions.CodexErrorInfo.oneOf[1].properties.httpConnectionFailed.properties.httpStatusCode = { type: "string" }; },
+    (bundle) => { delete bundle.definitions.Turn.properties.error; },
+  ]) {
+    const incompatible = schema();
+    mutate(incompatible);
+    assert.equal(qualifyStableSchemaBundle(incompatible).schemaSubsetCompatible, false);
+  }
+});
+
+test("rejects every future consumed error variant and unsafe TurnError union branch", () => {
+  for (const mutate of [
+    (bundle) => { bundle.definitions.CodexErrorInfo.oneOf[0].enum.push("futureErrorInfo"); },
+    (bundle) => { bundle.definitions.CodexErrorInfo.oneOf.push(
+      objectDefinition({ futureErrorInfo: objectDefinition({}) }, ["futureErrorInfo"]),
+    ); },
+    (bundle) => {
+      bundle.definitions.CodexErrorInfo.oneOf.at(-1)
+        .properties.activeTurnNotSteerable.properties.turnKind.enum.push("futureTurn");
+    },
+    (bundle) => {
+      const knownTurnError = bundle.definitions.TurnError;
+      bundle.definitions.TurnError = {
+        anyOf: [
+          knownTurnError,
+          objectDefinition({ message: { type: "number" } }, ["message"]),
+        ],
+      };
+    },
+  ]) {
+    const incompatible = schema();
+    mutate(incompatible);
+    assert.equal(qualifyStableSchemaBundle(incompatible).schemaSubsetCompatible, false);
+  }
+});
+
+test("rejects missing required fields in consumed objects without throwing", () => {
+  for (const mutate of [
+    (bundle) => { delete bundle.definitions.TurnError.required; },
+    (bundle) => { delete bundle.definitions.Turn.required; },
+    (bundle) => { delete bundle.definitions.CodexErrorInfo.oneOf[1].required; },
+    (bundle) => {
+      delete bundle.definitions.CodexErrorInfo.oneOf.at(-1)
+        .properties.activeTurnNotSteerable.required;
+    },
+  ]) {
+    const incompatible = schema();
+    mutate(incompatible);
+    assert.equal(qualifyStableSchemaBundle(incompatible).schemaSubsetCompatible, false);
+  }
+});
+
+test("accepts equivalent nullable HTTP status unions and rejects incompatible alternatives", () => {
+  for (const keyword of ["anyOf", "oneOf"]) {
+    const compatible = schema();
+    compatible.definitions.HttpStatus = { type: "integer", minimum: 0, maximum: 65_535 };
+    const statusSchema = {
+      [keyword]: [{ $ref: "#/definitions/HttpStatus" }, { type: "null" }],
+    };
+    compatible.definitions.CodexErrorInfo.oneOf[1]
+      .properties.httpConnectionFailed.properties.httpStatusCode = statusSchema;
+    assert.equal(qualifyStableSchemaBundle(compatible).schemaSubsetCompatible, true);
+    for (const invalidType of ["number", "string", "object"]) {
+      const incompatible = structuredClone(compatible);
+      incompatible.definitions.CodexErrorInfo.oneOf[1]
+        .properties.httpConnectionFailed.properties.httpStatusCode[keyword].push({ type: invalidType });
+      assert.equal(qualifyStableSchemaBundle(incompatible).schemaSubsetCompatible, false);
+    }
+  }
+});
+
 test("checks concrete outgoing sandbox, approval, effort, and ephemeral values", () => {
   for (const [name, field, restriction] of [
     ["ThreadStartParams", "sandbox", { type: "string", enum: ["workspace-write"] }],
@@ -366,6 +472,7 @@ test("requires explicitly described incoming turns to preserve id, items, and st
     id: { type: "string" },
     items: { type: "array" },
     status: { type: "string", enum: ["inProgress", "completed", "interrupted", "failed", "future"] },
+    error: { anyOf: [{ $ref: "#/definitions/TurnError" }, { type: "null" }] },
   }, ["id", "items", "status"]);
   const compatible = schema();
   compatible.definitions.v2 = { Turn: turn };
@@ -388,6 +495,13 @@ test("requires explicitly described incoming turns to preserve id, items, and st
   const missingStatus = structuredClone(compatible);
   missingStatus.definitions.v2.Turn.properties.status.enum = ["inProgress", "completed", "failed"];
   assert.equal(qualifyStableSchemaBundle(missingStatus).schemaSubsetCompatible, false);
+
+  const missingError = structuredClone(compatible);
+  delete missingError.definitions.v2.Turn.properties.error;
+  assert.equal(qualifyStableSchemaBundle(missingError).schemaSubsetCompatible, false);
+  const malformedError = structuredClone(compatible);
+  malformedError.definitions.TurnError.properties.codexErrorInfo = { type: "number" };
+  assert.equal(qualifyStableSchemaBundle(malformedError).schemaSubsetCompatible, false);
 });
 
 test("checks optional approval response schemas against every supported decision", () => {

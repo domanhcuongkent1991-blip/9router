@@ -51,6 +51,61 @@ test("a cancelled MCP request stops only its own job", async () => {
   assert.equal((await result).status, "cancelled");
 });
 
+test("returns bounded source-aware failures without preserving remote bodies", async () => {
+  const core = lifecycleCore({ createRuntime: async () => ({
+    run: async () => {
+      throw Object.assign(new Error("api_key=raw-secret"), {
+        code: "app_server_session_error",
+        details: { remoteSource: "provider", remoteCode: "provider_rate_limit", remoteStatus: 429 },
+      });
+    },
+    cancel: async () => {}, dispose: async () => {},
+  }) });
+  const result = await core.runGeminiTask(baseRequest);
+  assert.deepEqual(result.error, {
+    category: "rate_limited", source: "provider", code: "provider_rate_limit", status: 429,
+  });
+  assert.equal(JSON.stringify(result).includes("raw-secret"), false);
+});
+
+test("does not persist caller-controlled error metadata from local failures", async () => {
+  const sentinel = "sentinel-untrusted-4829";
+  const persisted = [];
+  const core = lifecycleCore({
+    validateRequest: async () => {
+      throw Object.assign(new Error("secret"), {
+        code: "invalid_request", details: { field: sentinel, reason: sentinel, stage: sentinel },
+      });
+    },
+    persistStatus: async (snapshot) => persisted.push(structuredClone(snapshot)),
+  });
+  const result = await core.runGeminiTask(baseRequest);
+  assert.deepEqual(result.error, {
+    category: "invalid_request", source: "unknown", code: "invalid_request",
+  });
+  assert.equal(JSON.stringify([result, persisted]).includes(sentinel), false);
+});
+
+test("propagates classified local gate details into terminal and persisted status", async () => {
+  const persisted = [];
+  const core = lifecycleCore({
+    validateRequest: async () => {
+      throw Object.assign(new Error("api_key=sentinel-runtime-secret"), {
+        code: "app_server_incompatible",
+        details: { stage: "qualification", reason: "qualification_record_missing" },
+      });
+    },
+    persistStatus: async (snapshot) => persisted.push(structuredClone(snapshot)),
+  });
+  const result = await core.runGeminiTask(baseRequest);
+  assert.deepEqual(result.error, {
+    category: "app_server_incompatible", source: "unknown", code: "app_server_incompatible",
+    stage: "qualification", reason: "qualification_record_missing",
+  });
+  assert.deepEqual(persisted.at(-1).error, result.error);
+  assert.equal(JSON.stringify([result, persisted]).includes(SECRET), false);
+});
+
 function deferred() {
   let resolve;
   let reject;
@@ -858,7 +913,9 @@ test("loads only terminal recovered statuses for on-demand inspection", () => {
     workspaceLeases: createWorkspaceLeaseManager(), redactor: createCompanionRedactor(),
     initialStatuses: [recovered],
   });
-  assert.deepEqual(core.getGeminiStatus("job_recovered"), recovered);
+  assert.deepEqual(core.getGeminiStatus("job_recovered"), {
+    ...recovered, error: { category: "protocol_error", source: "unknown" },
+  });
 });
 
 test("locks writers by canonical Git repository rather than selected subdirectory", async () => {

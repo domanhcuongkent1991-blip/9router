@@ -1,12 +1,13 @@
 import { realpath, stat } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 
-const ALLOWED_KEYS = new Set(["task", "workspace", "effort", "access", "session_id", "timeout_minutes"]);
+const ALLOWED_KEYS = new Set(["task", "workspace", "model", "effort", "access", "session_id", "timeout_minutes"]);
 const MAX_TASK_BYTES = 64 * 1024;
 const MAX_PATH_BYTES = 4_096;
 const MAX_SESSION_ID_BYTES = 512;
 const MIN_TIMEOUT_MINUTES = 1;
 const MAX_TIMEOUT_MINUTES = 120;
+const MODEL_IDENTIFIER = /^[A-Za-z0-9._:/-]{1,256}$/u;
 
 export class CompanionRequestError extends Error {
   constructor(field, reason) {
@@ -48,8 +49,24 @@ function boundedNonEmptyString(value, maxBytes) {
     && Buffer.byteLength(value, "utf8") <= maxBytes;
 }
 
+export function isSafeModelIdentifier(value) {
+  return typeof value === "string" && MODEL_IDENTIFIER.test(value);
+}
+
+function validModelPolicy(defaultModel, allowedModels) {
+  return isSafeModelIdentifier(defaultModel)
+    && Array.isArray(allowedModels)
+    && allowedModels.length > 0
+    && allowedModels.length <= 64
+    && allowedModels.every(isSafeModelIdentifier)
+    && new Set(allowedModels).size === allowedModels.length
+    && allowedModels.includes(defaultModel);
+}
+
 export async function validateGeminiRequest(request, {
   permittedWorkspaceRoots,
+  defaultModel = "gemini-fixed",
+  allowedModels = [defaultModel],
   realpathPath = realpath,
   statPath = stat,
 } = {}) {
@@ -57,6 +74,9 @@ export async function validateGeminiRequest(request, {
   const unknownKey = Object.keys(request).find((key) => !ALLOWED_KEYS.has(key));
   if (unknownKey) fail(unknownKey, "unsupported_field");
   if (!boundedNonEmptyString(request.task, MAX_TASK_BYTES)) fail("task", "invalid_or_too_large");
+  if (!validModelPolicy(defaultModel, allowedModels)) fail("model", "invalid_allowed_models");
+  const model = request.model ?? defaultModel;
+  if (!isSafeModelIdentifier(model) || !allowedModels.includes(model)) fail("model", "not_allowed");
   if (!boundedNonEmptyString(request.workspace, MAX_PATH_BYTES) || !isAbsolute(request.workspace)) {
     fail("workspace", "absolute_path_required");
   }
@@ -107,6 +127,7 @@ export async function validateGeminiRequest(request, {
     workspace: canonicalWorkspace,
     effort,
     access,
+    model,
     ...(request.session_id === undefined ? {} : { sessionId: request.session_id.trim() }),
     timeoutMinutes,
   });

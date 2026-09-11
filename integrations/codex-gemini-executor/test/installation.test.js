@@ -35,6 +35,24 @@ function envelope(method, paramsRef, { request = true } = {}) {
 }
 
 function canonicalSchemaBundle() {
+  const httpInfo = (name) => objectSchema({
+    [name]: objectSchema({ httpStatusCode: { type: ["integer", "null"] } }),
+  }, [name]);
+  const codexErrorInfo = {
+    oneOf: [
+      { type: "string", enum: [
+        "contextWindowExceeded", "sessionBudgetExceeded", "usageLimitExceeded", "rateLimitExceeded", "serverOverloaded",
+        "cyberPolicy", "misalignmentPolicyViolation", "internalServerError", "unauthorized", "badRequest",
+        "threadRollbackFailed", "sandboxError", "other",
+      ] },
+      httpInfo("httpConnectionFailed"), httpInfo("responseStreamConnectionFailed"),
+      httpInfo("responseStreamDisconnected"), httpInfo("responseTooManyFailedAttempts"),
+      objectSchema({ activeTurnNotSteerable: objectSchema({
+        turnKind: { type: "string", enum: ["review", "compact"] },
+      }, ["turnKind"]) }, ["activeTurnNotSteerable"]),
+    ],
+  };
+  for (const branch of codexErrorInfo.oneOf.filter((entry) => entry.type === "object")) branch.additionalProperties = false;
   const definitions = {
     RequestId: { oneOf: [{ type: "integer" }, { type: "string" }] },
     InitializeParams: objectSchema({
@@ -71,9 +89,19 @@ function canonicalSchemaBundle() {
       threadId: { type: "string" },
       turnId: { type: "string" },
     }, ["threadId", "turnId"]),
+    CodexErrorInfo: codexErrorInfo,
+    TurnError: objectSchema({
+      message: { type: "string" },
+      codexErrorInfo: { anyOf: [{ $ref: "#/definitions/CodexErrorInfo" }, { type: "null" }] },
+    }, ["message"]),
+    Turn: objectSchema({
+      id: { type: "string" }, items: { type: "array" },
+      status: { type: "string", enum: ["inProgress", "completed", "interrupted", "failed"] },
+      error: { anyOf: [{ $ref: "#/definitions/TurnError" }, { type: "null" }] },
+    }, ["id", "items", "status"]),
     TurnStartedNotification: objectSchema({
       threadId: { type: "string" },
-      turn: { type: "object" },
+      turn: { $ref: "#/definitions/Turn" },
     }, ["threadId", "turn"]),
     AgentMessageDeltaNotification: objectSchema({
       threadId: { type: "string" },
@@ -81,9 +109,15 @@ function canonicalSchemaBundle() {
       itemId: { type: "string" },
       delta: { type: "string" },
     }, ["threadId", "turnId", "itemId", "delta"]),
+    ErrorNotification: objectSchema({
+      error: { $ref: "#/definitions/TurnError" },
+      threadId: { type: "string" },
+      turnId: { type: "string" },
+      willRetry: { type: "boolean" },
+    }, ["error", "threadId", "turnId", "willRetry"]),
     TurnCompletedNotification: objectSchema({
       threadId: { type: "string" },
-      turn: { type: "object" },
+      turn: { $ref: "#/definitions/Turn" },
     }, ["threadId", "turn"]),
     CommandExecutionRequestApprovalParams: objectSchema({
       threadId: { type: "string" },
@@ -107,6 +141,7 @@ function canonicalSchemaBundle() {
   definitions.ServerNotification = { oneOf: [
     envelope("turn/started", "#/definitions/TurnStartedNotification", { request: false }),
     envelope("item/agentMessage/delta", "#/definitions/AgentMessageDeltaNotification", { request: false }),
+    envelope("error", "#/definitions/ErrorNotification", { request: false }),
     envelope("turn/completed", "#/definitions/TurnCompletedNotification", { request: false }),
   ] };
   definitions.ServerRequest = { oneOf: [
@@ -120,6 +155,8 @@ test("loads only installation-owned routing and workspace settings", () => {
   const config = readInstallationConfig(environment());
   assert.equal(config.executablePath, "C:\\CodexDesktop\\codex.exe");
   assert.equal(config.fixedModel, "gemini-fixed");
+  assert.deepEqual(config.allowedModels, ["gemini-fixed"]);
+  assert.equal(Object.isFrozen(config.allowedModels), true);
   assert.deepEqual(config.permittedWorkspaceRoots, ["D:\\Repo", "D:\\Other"]);
   assert.equal(config.baseline.executableSha256, "a".repeat(64));
 });
@@ -179,6 +216,39 @@ test("rejects missing, relative, or injectable installation values", () => {
 test("entrypoint import does not start stdio", async () => {
   const entry = await import("../src/index.js");
   assert.equal(typeof entry.main, "function");
+});
+
+test("parses a bounded sorted model allowlist and binds it into qualification identity", async () => {
+  const config = readInstallationConfig(environment({
+    NINEROUTER_GEMINI_MODELS: "gemini-z;gemini-fixed;gemini-a",
+  }));
+  assert.deepEqual(config.allowedModels, ["gemini-a", "gemini-fixed", "gemini-z"]);
+  assert.equal(Object.isFrozen(config.allowedModels), true);
+
+  const observed = await installation.observeInstalledCombination(config, {
+    observe: async () => ({ executablePath: "C:\\CodexDesktop\\codex.exe", version: "1", executableSha256: "a".repeat(64) }),
+    read: async () => "{}",
+    routerIdentity: async () => ({ version: "0.5.65", buildId: "build_1", contractVersion: 1 }),
+    digestSource: async () => "b".repeat(64),
+  });
+  assert.equal(observed.identity.provider, "nine_router");
+  assert.deepEqual(observed.identity.allowedModels, ["gemini-a", "gemini-fixed", "gemini-z"]);
+});
+
+test("rejects empty, duplicate, malformed, oversized, and default-missing model allowlists", () => {
+  const oversized = Array.from({ length: 65 }, (_, index) => `gemini-${index}`).join(";");
+  for (const allowlist of [
+    ";gemini-fixed",
+    "gemini-fixed;",
+    "gemini-fixed;;gemini-fast",
+    "gemini-fixed;gemini-fixed",
+    "gemini-fixed;bad\nmodel",
+    oversized,
+    "gemini-fast;gemini-a",
+  ]) {
+    assert.throws(() => readInstallationConfig(environment({ NINEROUTER_GEMINI_MODELS: allowlist })),
+      { code: "invalid_installation_configuration" });
+  }
 });
 
 test("keeps legacy storage defaults and accepts separate candidate roots", () => {

@@ -1,6 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 
 import { APP_SERVER_REQUIRED_METHODS } from "./compatibility.js";
+import {
+  CODEX_ERROR_INFO_CODES,
+  HTTP_ERROR_INFO_CODES,
+  NON_STEERABLE_TURN_KINDS,
+} from "./events.js";
 
 const EXPECTED_PARAMETER_REFS = Object.freeze({
   initialize: "#/definitions/InitializeParams",
@@ -14,6 +19,7 @@ const EXPECTED_PARAMETER_REFS = Object.freeze({
 const EXPECTED_NOTIFICATION_REFS = Object.freeze({
   "turn/started": "#/definitions/TurnStartedNotification",
   "item/agentMessage/delta": "#/definitions/AgentMessageDeltaNotification",
+  error: "#/definitions/ErrorNotification",
   "turn/completed": "#/definitions/TurnCompletedNotification",
 });
 
@@ -90,6 +96,12 @@ const PARAMETER_CONTRACTS = Object.freeze({
     direction: "incoming",
     fields: { threadId: "string", turnId: "string", itemId: "string", delta: "string" },
     required: ["threadId", "turnId", "itemId", "delta"],
+  },
+  "#/definitions/ErrorNotification": {
+    direction: "incoming",
+    fields: { error: "object", threadId: "string", turnId: "string", willRetry: "boolean" },
+    required: ["error", "threadId", "turnId", "willRetry"],
+    turnError: true,
   },
   "#/definitions/TurnCompletedNotification": {
     direction: "incoming",
@@ -246,23 +258,160 @@ function acceptsValue(schema, value, definitions, depth = 0) {
   return true;
 }
 
-function turnShapeCompatible(schema, statuses, definitions, depth = 0) {
-  if (!isObject(schema) || depth > 32) return false;
-  if (Object.hasOwn(schema, "$ref")
-    && !turnShapeCompatible(resolveDefinition(definitions, schema.$ref), statuses, definitions, depth + 1)) return false;
-  for (const keyword of ["allOf", "anyOf", "oneOf"]) {
-    if (schema[keyword] === undefined) continue;
-    if (!Array.isArray(schema[keyword]) || schema[keyword].length === 0
-      || !schema[keyword].every((branch) => turnShapeCompatible(branch, statuses, definitions, depth + 1))) return false;
+const CODEX_ERROR_INFO_SAMPLES = Object.freeze([
+  null,
+  ...CODEX_ERROR_INFO_CODES,
+  ...HTTP_ERROR_INFO_CODES.map((code) => ({ [code]: { httpStatusCode: 503 } })),
+  ...NON_STEERABLE_TURN_KINDS.map((turnKind) => ({ activeTurnNotSteerable: { turnKind } })),
+]);
+
+const SCHEMA_ANNOTATIONS = new Set(["$schema", "title", "description", "default", "examples"]);
+
+function onlyWrapperKeys(schema, allowed) {
+  return Object.keys(schema).every((key) => allowed.has(key) || SCHEMA_ANNOTATIONS.has(key));
+}
+
+// The protocol's error values are finite. For consumed unions, every admissible
+// branch must be understood by events.js; allOf is rejected until this narrow
+// verifier can prove its intersection without weakening the runtime contract.
+function consumedAlternatives(schema, definitions, depth = 0) {
+  if (!isObject(schema) || depth > 32) return undefined;
+  if (Object.hasOwn(schema, "$ref")) {
+    if (!onlyWrapperKeys(schema, new Set(["$ref"]))) return undefined;
+    return consumedAlternatives(resolveDefinition(definitions, schema.$ref), definitions, depth + 1);
   }
-  // Older type-only schemas do not describe nested fields; explicit shapes must preserve them.
-  if (schema.properties === undefined && schema.required === undefined) return true;
-  if (!isObject(schema.properties) || !validRequired(schema.required)) return false;
-  return Object.entries({ id: "string", items: "array", status: "string" }).every(([field, kind]) => (
-    schema.required?.includes(field)
-    && fieldKindCompatible(schema.properties[field], kind, definitions, "incoming")
-    && (field !== "status" || statuses.every((status) => acceptsValue(schema.properties.status, status, definitions)))
-  ));
+  if (schema.allOf !== undefined) return undefined;
+  const unions = ["anyOf", "oneOf"].filter((keyword) => schema[keyword] !== undefined);
+  if (unions.length === 0) return [schema];
+  if (unions.length !== 1 || !onlyWrapperKeys(schema, new Set([unions[0]]))) return undefined;
+  const branches = schema[unions[0]];
+  if (!Array.isArray(branches) || branches.length === 0) return undefined;
+  const alternatives = branches.map((branch) => consumedAlternatives(branch, definitions, depth + 1));
+  return alternatives.some((branch) => branch === undefined) ? undefined : alternatives.flat();
+}
+
+function consumedSchema(schema, definitions, depth = 0) {
+  const alternatives = consumedAlternatives(schema, definitions, depth);
+  return alternatives?.length === 1 ? alternatives[0] : undefined;
+}
+
+function onlyKind(schema, kind, definitions) {
+  const kinds = schemaKinds(schema, definitions);
+  return kinds.size === 1 && kinds.has(kind);
+}
+
+function exactEnumSubset(schema, allowed, definitions) {
+  const concrete = consumedSchema(schema, definitions);
+  return concrete !== undefined
+    && onlyKind(concrete, "string", definitions)
+    && Array.isArray(concrete.enum)
+    && concrete.enum.length > 0
+    && concrete.enum.every((value) => typeof value === "string" && allowed.has(value));
+}
+
+function integerOrNullSchema(schema, definitions) {
+  const alternatives = consumedAlternatives(schema, definitions);
+  return alternatives !== undefined && alternatives.every((alternative) => {
+    const kinds = schemaKinds(alternative, definitions);
+    return kinds.size > 0 && [...kinds].every((kind) => kind === "integer" || kind === "null");
+  }) && acceptsValue(schema, 503, definitions) && acceptsValue(schema, null, definitions);
+}
+
+function knownObjectErrorVariant(schema, definitions) {
+  const concrete = consumedSchema(schema, definitions);
+  if (concrete === undefined || !onlyKind(concrete, "object", definitions)
+    || !isObject(concrete.properties) || !validRequired(concrete.required)
+    || concrete.additionalProperties !== false) return false;
+
+  const [code] = Object.keys(concrete.properties);
+  if (Object.keys(concrete.properties).length !== 1 || !concrete.required?.includes(code)) return false;
+  const details = consumedSchema(concrete.properties[code], definitions);
+  if (details === undefined || !onlyKind(details, "object", definitions)
+    || !isObject(details.properties) || !validRequired(details.required)) return false;
+
+  if (HTTP_ERROR_INFO_CODES.includes(code)) {
+    return Object.hasOwn(details.properties, "httpStatusCode")
+      && integerOrNullSchema(details.properties.httpStatusCode, definitions);
+  }
+  if (code !== "activeTurnNotSteerable") return false;
+  return details.required?.includes("turnKind") === true
+    && Object.hasOwn(details.properties, "turnKind")
+    && exactEnumSubset(details.properties.turnKind, new Set(NON_STEERABLE_TURN_KINDS), definitions);
+}
+
+function codexErrorInfoShapeCompatible(schema, definitions) {
+  const alternatives = consumedAlternatives(schema, definitions);
+  if (!alternatives || !alternatives.every((alternative) => {
+    const concrete = consumedSchema(alternative, definitions);
+    if (concrete === undefined) return false;
+    if (onlyKind(concrete, "null", definitions)) return acceptsValue(concrete, null, definitions);
+    if (onlyKind(concrete, "string", definitions)) {
+      return exactEnumSubset(concrete, new Set(CODEX_ERROR_INFO_CODES), definitions);
+    }
+    return knownObjectErrorVariant(concrete, definitions);
+  })) return false;
+  return CODEX_ERROR_INFO_SAMPLES.every((sample) => acceptsValue(schema, sample, definitions));
+}
+
+function turnErrorObjectCompatible(schema, definitions) {
+  const concrete = consumedSchema(schema, definitions);
+  if (concrete === undefined || !onlyKind(concrete, "object", definitions)
+    || !isObject(concrete.properties) || !validRequired(concrete.required)
+    || !concrete.required?.includes("message")
+    || !Object.hasOwn(concrete.properties, "message")
+    || !fieldKindCompatible(concrete.properties.message, "string", definitions, "incoming")
+    || !Object.hasOwn(concrete.properties, "codexErrorInfo")) return false;
+  return codexErrorInfoShapeCompatible(concrete.properties.codexErrorInfo, definitions);
+}
+
+function turnErrorShapeCompatible(schema, definitions) {
+  const alternatives = consumedAlternatives(schema, definitions);
+  return alternatives !== undefined
+    && alternatives.every((alternative) => turnErrorObjectCompatible(alternative, definitions))
+    && CODEX_ERROR_INFO_SAMPLES.every((codexErrorInfo) => acceptsValue(schema, {
+      message: "error", codexErrorInfo,
+    }, definitions));
+}
+
+function nullableTurnErrorShapeCompatible(schema, definitions) {
+  const alternatives = consumedAlternatives(schema, definitions);
+  if (!alternatives) return false;
+  let allowsError = false;
+  for (const alternative of alternatives) {
+    const concrete = consumedSchema(alternative, definitions);
+    if (concrete === undefined) return false;
+    if (onlyKind(concrete, "null", definitions)) {
+      if (!acceptsValue(concrete, null, definitions)) return false;
+    } else if (turnErrorObjectCompatible(concrete, definitions)) {
+      allowsError = true;
+    } else {
+      return false;
+    }
+  }
+  return allowsError && CODEX_ERROR_INFO_SAMPLES.every((codexErrorInfo) => acceptsValue(schema, {
+      message: "error", codexErrorInfo,
+    }, definitions));
+}
+
+function turnShapeCompatible(schema, statuses, definitions) {
+  const alternatives = consumedAlternatives(schema, definitions);
+  return alternatives !== undefined && alternatives.every((alternative) => {
+    const concrete = consumedSchema(alternative, definitions);
+    // Failed turns need an explicitly described error branch for fallback classification.
+    if (concrete === undefined) return false;
+    if (concrete.properties === undefined && concrete.required === undefined) return !statuses.includes("failed");
+    if (!onlyKind(concrete, "object", definitions)
+      || !isObject(concrete.properties) || !validRequired(concrete.required)) return false;
+    const baseShapeCompatible = Object.entries({ id: "string", items: "array", status: "string" }).every(([field, kind]) => (
+      concrete.required?.includes(field)
+      && fieldKindCompatible(concrete.properties[field], kind, definitions, "incoming")
+      && (field !== "status" || statuses.every((status) => acceptsValue(concrete.properties.status, status, definitions)))
+    ));
+    if (!baseShapeCompatible) return false;
+    return !statuses.includes("failed")
+      || (Object.hasOwn(concrete.properties, "error")
+        && nullableTurnErrorShapeCompatible(concrete.properties.error, definitions));
+  });
 }
 
 function definitionCompatible(definitions, actualRef, expectedRef) {
@@ -283,6 +432,8 @@ function definitionCompatible(definitions, actualRef, expectedRef) {
     && fieldKindCompatible(definition.properties[field], kind, definitions, contract.direction)
     && (contract.direction === "outgoing" || required.includes(field))
     && (contract.values?.[field] ?? []).every((value) => acceptsValue(definition.properties[field], value, definitions))
+    && (field !== "error" || !contract.turnError
+      || turnErrorShapeCompatible(definition.properties.error, definitions))
     && (field !== "turn" || !contract.turnStatuses
       || turnShapeCompatible(definition.properties.turn, contract.turnStatuses, definitions))
   ));

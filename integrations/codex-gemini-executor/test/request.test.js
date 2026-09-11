@@ -3,13 +3,20 @@ import assert from "node:assert/strict";
 
 import { CompanionRequestError, validateGeminiRequest } from "../src/request.js";
 
-function filesystemFixture({ workspace = "D:\\Repo", root = "D:\\Repo" } = {}) {
+function filesystemFixture({
+  workspace = "D:\\Repo",
+  root = "D:\\Repo",
+  defaultModel = "gemini-fixed",
+  allowedModels = [defaultModel],
+} = {}) {
   const canonical = new Map([
     [workspace, "D:\\Repo"],
     [root, "D:\\Repo"],
   ]);
   return {
     permittedWorkspaceRoots: [root],
+    defaultModel,
+    allowedModels,
     realpathPath: async (value) => canonical.get(value) ?? value,
     statPath: async () => ({ isDirectory: () => true }),
   };
@@ -23,6 +30,7 @@ test("normalizes defaults and canonical workspace without mutating the request",
     workspace: "D:\\Repo",
     effort: "medium",
     access: "read-only",
+    model: "gemini-fixed",
     timeoutMinutes: 30,
   });
   assert.deepEqual(request, { task: "  inspect the repository  ", workspace: "D:\\Repo" });
@@ -37,9 +45,20 @@ test("accepts the bounded supported request contract", async () => {
     access: "workspace-write",
     session_id: "session_1",
     timeout_minutes: 120,
-  }, filesystemFixture());
+    model: "gemini-fast",
+  }, filesystemFixture({ allowedModels: ["gemini-fixed", "gemini-fast"] }));
   assert.equal(output.sessionId, "session_1");
   assert.equal(output.timeoutMinutes, 120);
+  assert.equal(output.model, "gemini-fast");
+});
+
+test("rejects an unallowlisted model before filesystem access", async () => {
+  let filesystemCalls = 0;
+  await assert.rejects(validateGeminiRequest({ task: "x", workspace: "D:\\Repo", model: "gemini-other" }, {
+    ...filesystemFixture({ allowedModels: ["gemini-fixed", "gemini-fast"] }),
+    realpathPath: async () => { filesystemCalls += 1; return "D:\\Repo"; },
+  }), { code: "invalid_request", details: { field: "model", reason: "not_allowed" } });
+  assert.equal(filesystemCalls, 0);
 });
 
 test("rejects unsupported values, caller routing fields, and oversized inputs before filesystem access", async () => {

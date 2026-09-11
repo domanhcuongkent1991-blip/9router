@@ -1,19 +1,5 @@
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const ALLOWED_STATUSES = new Set(["starting", "running", "awaiting_approval", ...TERMINAL_STATUSES]);
-const ERROR_CATEGORIES = new Set([
-  "router_unavailable",
-  "model_unavailable",
-  "provider_auth_failed",
-  "provider_quota_exceeded",
-  "app_server_incompatible",
-  "workspace_dirty",
-  "workspace_locked",
-  "approval_required",
-  "timeout",
-  "cancelled",
-  "protocol_error",
-  "invalid_request",
-]);
 const RUNTIME_RESULT_KEYS = new Set(["sessionId", "finalAnswer", "filesChanged", "tests"]);
 const MAX_SESSION_ID_BYTES = 512;
 const MAX_FINAL_ANSWER_BYTES = 64 * 1024;
@@ -58,22 +44,6 @@ function utf8Prefix(value, maxBytes) {
 
 function byteLength(value) {
   return Buffer.byteLength(value, "utf8");
-}
-
-function categoryFor(error) {
-  try {
-    return ERROR_CATEGORIES.has(error?.code) ? error.code : "protocol_error";
-  } catch {
-    return "protocol_error";
-  }
-}
-
-function sanitizeError(redactor, error) {
-  try {
-    return redactor.redactError(error instanceof Error ? error : new Error("Unknown failure"));
-  } catch {
-    return { name: "Error", message: "Sanitized failure" };
-  }
 }
 
 function requireDependency(condition, reason) {
@@ -171,7 +141,10 @@ export function createGeminiCompanionCore({
   const leaseReleases = new WeakMap();
 
   for (const snapshot of initialStatuses) {
-    const sanitized = redactor.redactJson(snapshot);
+    const redacted = redactor.redactJson(snapshot);
+    const sanitized = redacted?.error === undefined
+      ? redacted
+      : { ...redacted, error: normalizePublicError(redacted.error) };
     if (typeof sanitized?.jobId !== "string" || !TERMINAL_STATUSES.has(sanitized.status) || jobs.has(sanitized.jobId)) {
       throw new CompanionJobError("invalid_core_configuration", "invalid_initial_status");
     }
@@ -226,10 +199,7 @@ export function createGeminiCompanionCore({
     const fallback = {
       jobId: job.snapshot.jobId,
       status: "failed",
-      error: {
-        category: "protocol_error",
-        cause: { name: "PersistenceFailure", message: "Status persistence failed" },
-      },
+      error: { category: "protocol_error", source: "unknown", code: "persistence_failed" },
       ...(typeof job.snapshot.workspace === "string" ? { workspace: job.snapshot.workspace } : {}),
       ...(Object.hasOwn(job.snapshot, "worktreePath") ? { worktreePath: job.snapshot.worktreePath } : {}),
       output: job.output,
@@ -415,19 +385,23 @@ export function createGeminiCompanionCore({
   }
 
   function terminalPatchForError(job, error) {
-    const category = error instanceof StopRequested ? error.category : categoryFor(error);
+    const classified = normalizePublicError(error instanceof StopRequested
+      ? { category: error.category, source: error.category === "timeout" ? "mcp_execution" : "unknown" }
+      : classifyCompanionError(error));
+    const category = classified.category;
+    const model = modelPatch(job);
     return category === "cancelled"
-      ? { status: "cancelled", error: { category: "cancelled" }, output: job.output }
+      ? { status: "cancelled", error: classified, output: job.output, ...model }
       : {
           status: "failed",
-          error: {
-            category,
-            cause: error instanceof StopRequested
-              ? { name: "StopRequested", message: "Job stopped" }
-              : sanitizeError(redactor, error),
-          },
+          error: classified,
           output: job.output,
+          ...model,
         };
+  }
+
+  function modelPatch(job) {
+    return typeof job.request?.model === "string" ? { model: job.request.model } : {};
   }
 
   function scrubTerminalReferences(job) {
@@ -555,6 +529,7 @@ export function createGeminiCompanionCore({
           workspace: job.request.workspace,
           worktreePath: workspace.worktreePath,
           access: job.request.access,
+          ...modelPatch(job),
         });
       }
       let runtime = job.runtime;
@@ -590,6 +565,7 @@ export function createGeminiCompanionCore({
         worktreePath: workspace.worktreePath ?? null,
         access: job.request.access,
         effort: job.request.effort,
+        ...modelPatch(job),
         compatibilityWarnings: compatibility?.warnings ?? [],
       });
       armIdleTimer(job);
@@ -614,6 +590,7 @@ export function createGeminiCompanionCore({
         finalAnswer: result.finalAnswer,
         filesChanged: result.filesChanged,
         tests: result.tests,
+        ...modelPatch(job),
         workspace: job.request.workspace,
         worktreePath: workspace.worktreePath ?? null,
         output: job.output,
@@ -624,7 +601,7 @@ export function createGeminiCompanionCore({
 
     const cleanupFailed = await cleanup(job, terminalPatch.status !== "completed");
     if (cleanupFailed && terminalPatch.status === "completed") {
-      terminalPatch = { status: "failed", error: { category: "protocol_error" }, output: job.output };
+      terminalPatch = { status: "failed", error: { category: "protocol_error", source: "unknown" }, output: job.output };
     }
     try {
       await publish(job, terminalPatch, { interruptible: false });
@@ -654,3 +631,4 @@ export function createGeminiCompanionCore({
 
   return Object.freeze({ runGeminiTask, getGeminiStatus, cancelGeminiTask });
 }
+import { classifyCompanionError, normalizePublicError } from "./error-classification.js";

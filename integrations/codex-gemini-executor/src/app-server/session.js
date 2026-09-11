@@ -3,14 +3,17 @@ import { posix, win32 } from "node:path";
 const MAX_IDENTIFIER_BYTES = 512;
 const MAX_CWD_BYTES = 4096;
 const MAX_TASK_BYTES = 64 * 1024;
+const MODEL_PROVIDER = "nine_router";
+const SAFE_MODEL = /^[A-Za-z0-9._:/-]{1,256}$/u;
 
 export class AppServerSessionError extends Error {
-  constructor(reason, stage, cause) {
+  constructor(reason, stage, cause, remote = {}) {
     super("App Server session failure");
     this.name = "AppServerSessionError";
     this.code = "app_server_session_error";
     this.details = { reason, stage };
     if (cause !== undefined) this.details.causeType = cause instanceof Error ? cause.name : "UnknownError";
+    Object.assign(this.details, remote);
   }
 }
 
@@ -74,8 +77,28 @@ function turnFrom(response) {
   return response.turn;
 }
 
-export function createAppServerSessionAdapter({ client, fixedModel, fixedModelProvider }) {
-  if (!isBoundedString(fixedModel) || !isBoundedString(fixedModelProvider) || typeof client?.request !== "function") {
+function remoteMetadata(error) {
+  try {
+    const details = error?.details;
+    if (details === null || typeof details !== "object") return {};
+    const remoteCode = typeof details.remoteCode === "string" && /^[A-Za-z0-9._:/-]{1,128}$/u.test(details.remoteCode)
+      ? details.remoteCode : undefined;
+    const remoteStatus = Number.isInteger(details.remoteStatus) && details.remoteStatus >= 100 && details.remoteStatus <= 599
+      ? details.remoteStatus : undefined;
+    const remoteSource = ["codex_account", "mcp_execution", "router", "provider", "model"].includes(details.remoteSource)
+      ? details.remoteSource : undefined;
+    return {
+      ...(remoteCode === undefined ? {} : { remoteCode }),
+      ...(remoteStatus === undefined ? {} : { remoteStatus }),
+      ...(remoteSource === undefined ? {} : { remoteSource }),
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function createAppServerSessionAdapter({ client, model }) {
+  if (!isBoundedString(model) || !SAFE_MODEL.test(model) || typeof client?.request !== "function") {
     throw new AppServerSessionError("invalid_configuration", "config");
   }
 
@@ -83,7 +106,7 @@ export function createAppServerSessionAdapter({ client, fixedModel, fixedModelPr
     try {
       return await client.request(method, params);
     } catch (error) {
-      throw new AppServerSessionError("request_failed", stage, error);
+      throw new AppServerSessionError("request_failed", stage, error, remoteMetadata(error));
     }
   }
 
@@ -91,8 +114,8 @@ export function createAppServerSessionAdapter({ client, fixedModel, fixedModelPr
     if (!validThreadPolicy(value, false)) throw new AppServerSessionError("invalid_input", "input");
     const response = await request("thread/start", {
       cwd: value.cwd,
-      model: fixedModel,
-      modelProvider: fixedModelProvider,
+      model,
+      modelProvider: MODEL_PROVIDER,
       sandbox: value.sandbox,
       approvalPolicy: value.approvalPolicy,
       ephemeral: false,
@@ -107,8 +130,8 @@ export function createAppServerSessionAdapter({ client, fixedModel, fixedModelPr
     const response = await request("thread/resume", {
       threadId: value.threadId,
       cwd: value.cwd,
-      model: fixedModel,
-      modelProvider: fixedModelProvider,
+      model,
+      modelProvider: MODEL_PROVIDER,
       sandbox: value.sandbox,
       approvalPolicy: value.approvalPolicy,
     }, "thread_resume");
@@ -123,7 +146,7 @@ export function createAppServerSessionAdapter({ client, fixedModel, fixedModelPr
     const response = await request("turn/start", {
       threadId: value.threadId,
       input: [{ type: "text", text: value.task.trim() }],
-      model: fixedModel,
+      model,
       effort: value.effort,
     }, "turn_start");
     const turn = turnFrom(response);

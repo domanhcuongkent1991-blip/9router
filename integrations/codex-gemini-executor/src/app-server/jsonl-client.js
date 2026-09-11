@@ -9,6 +9,8 @@ export class AppServerProtocolError extends Error {
 
 const MAX_SERVER_REQUESTS = 8;
 const MAX_SERVER_REQUEST_ID_BYTES = 512;
+const MAX_REMOTE_CODE_BYTES = 128;
+const REMOTE_SOURCES = new Set(["codex_account", "mcp_execution", "router", "provider", "model"]);
 
 function protocolError(reason, error) {
   if (error instanceof AppServerProtocolError) return error;
@@ -22,9 +24,19 @@ function isObject(value) {
 }
 
 function scalarRemoteCode(value) {
-  return value === null || ["string", "number", "boolean"].includes(typeof value)
+  return typeof value === "string"
+    && /^[A-Za-z0-9._:/-]{1,128}$/u.test(value)
+    && Buffer.byteLength(value, "utf8") <= MAX_REMOTE_CODE_BYTES
     ? value
     : undefined;
+}
+
+function remoteStatus(value) {
+  return Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
+}
+
+function remoteSource(value) {
+  return typeof value === "string" && REMOTE_SOURCES.has(value) ? value : undefined;
 }
 
 function validServerRequestId(value) {
@@ -143,10 +155,21 @@ export function createAppServerJsonlClient({
     pending.delete(message.id);
     clearTimeout(entry.timer);
     if (hasError) {
+      const remoteData = isObject(message.error) && isObject(message.error.data) ? message.error.data : undefined;
       const remoteCode = isObject(message.error)
-        ? scalarRemoteCode(message.error.code)
+        ? scalarRemoteCode(message.error.code) ?? scalarRemoteCode(remoteData?.code)
         : undefined;
-      const details = remoteCode === undefined ? {} : { remoteCode };
+      const remoteStatusValue = isObject(message.error)
+        ? remoteStatus(message.error.status) ?? remoteStatus(remoteData?.status)
+        : undefined;
+      const remoteSourceValue = isObject(message.error)
+        ? remoteSource(message.error.source) ?? remoteSource(remoteData?.source)
+        : undefined;
+      const details = {
+        ...(remoteCode === undefined ? {} : { remoteCode }),
+        ...(remoteStatusValue === undefined ? {} : { remoteStatus: remoteStatusValue }),
+        ...(remoteSourceValue === undefined ? {} : { remoteSource: remoteSourceValue }),
+      };
       entry.reject(new AppServerProtocolError("remote_error", details));
       return;
     }

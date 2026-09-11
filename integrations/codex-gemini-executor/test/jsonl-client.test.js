@@ -35,6 +35,39 @@ test("writes headerless requests and correlates responses by id", async () => {
   client.close();
 });
 
+test("retains only bounded trusted metadata from a remote error", async () => {
+  const { readable, client } = fixture();
+  const pending = client.request("turn/start", {});
+  readable.write(`${JSON.stringify({ id: 1, error: {
+    code: "provider_rate_limit", status: 429, source: "provider",
+    data: { responseBody: "api_key=raw-secret" }, message: "raw-secret",
+  } })}\n`);
+  await assert.rejects(pending, (error) => {
+    assert.deepEqual(error.details, {
+      reason: "remote_error", remoteCode: "provider_rate_limit", remoteStatus: 429, remoteSource: "provider",
+    });
+    assert.equal(JSON.stringify(error).includes("raw-secret"), false);
+    return true;
+  });
+  client.close();
+});
+
+test("accepts explicit nested layer metadata without retaining its body", async () => {
+  const { readable, client } = fixture();
+  const pending = client.request("turn/start", {});
+  readable.write(`${JSON.stringify({ id: 1, error: {
+    code: "router_auth_failed", data: { source: "router", status: 401, body: "Bearer raw-secret" },
+  } })}\n`);
+  await assert.rejects(pending, (error) => {
+    assert.deepEqual(error.details, {
+      reason: "remote_error", remoteCode: "router_auth_failed", remoteStatus: 401, remoteSource: "router",
+    });
+    assert.equal(JSON.stringify(error).includes("raw-secret"), false);
+    return true;
+  });
+  client.close();
+});
+
 test("routes notifications and server requests separately", async () => {
   const notifications = [];
   const serverRequests = [];

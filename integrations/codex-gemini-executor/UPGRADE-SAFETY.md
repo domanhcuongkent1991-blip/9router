@@ -64,6 +64,26 @@ checks true without retained evidence. Neither command changes Codex config.
 Candidate acceptance must use the adapter directly in isolated fixtures, not a
 production qualification bypass. An automated live-canary runner is not included.
 
+### Model Selection and Error Observability
+
+`NINEROUTER_GEMINI_MODEL` remains the required default model.
+`NINEROUTER_GEMINI_MODELS`, when present, is a semicolon-separated allowlist of
+one to 64 unique safe model identifiers and must include that default. The sorted
+allowlist and fixed `nine_router` provider are part of the qualification identity;
+changing either requires fresh evidence. A request may select only an allowlisted
+model. The resolved model is bound to its child config, App Server session,
+approval continuation and saved session metadata. There is no model/provider
+failover or extra quota retry.
+
+The companion retains only bounded structured remote `source`, `status`, and
+`code` metadata for classification; it never stores remote response bodies. It
+distinguishes `codex_account`, `mcp_execution`, `router`, `provider`, `model`, and
+`unknown` when the emitting layer identifies itself. An HTTP 429 without that
+structured layer evidence remains `protocol_error` from `unknown`, never a claim
+that the provider is out of quota. If the MCP host rejects a tool invocation
+before the companion starts, the companion has no result to classify and must not
+invent one.
+
 The new gate binds app-server path/version/hash, Node path/version, companion
 source digest, dependency lock digest, 9Router version/BUILD_ID/contract and model.
 The BUILD_ID is captured by the running server module; serving unbuilt dev code

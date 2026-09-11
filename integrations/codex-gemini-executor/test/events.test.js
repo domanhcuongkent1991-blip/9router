@@ -34,6 +34,49 @@ test("ignores unknown notifications without examining params", () => {
   assert.equal(normalizeAppServerNotification({ method: "unknown/event", params: "unfamiliar raw payload" }), null);
 });
 
+test("normalizes only safe metadata from correlated turn errors", () => {
+  const secret = "turn-error-secret";
+  assert.deepEqual(normalizeAppServerNotification({
+    method: "error",
+    params: {
+      threadId: "thr_1", turnId: "turn_1", willRetry: false,
+      error: { message: secret, additionalDetails: secret, codexErrorInfo: "usageLimitExceeded" },
+    },
+  }), {
+    type: "turn_error", threadId: "thr_1", turnId: "turn_1", willRetry: false,
+    error: { code: "usageLimitExceeded" },
+  });
+
+  assert.deepEqual(normalizeAppServerNotification({
+    method: "turn/completed",
+    params: {
+      threadId: "thr_1",
+      turn: {
+        id: "turn_1", status: "failed", items: [],
+        error: { message: secret, codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 503 } } },
+      },
+    },
+  }), {
+    type: "turn_completed", threadId: "thr_1", turnId: "turn_1", status: "failed",
+    error: { code: "responseStreamDisconnected", status: 503 },
+  });
+});
+
+test("fails closed on malformed supported turn-error metadata without retaining raw payload", () => {
+  const secret = "malformed-turn-error-secret";
+  for (const params of [
+    { threadId: "thr_1", turnId: "turn_1", willRetry: false, error: { message: secret, codexErrorInfo: "notARealCode" } },
+    { threadId: "thr_1", turnId: "turn_1", willRetry: "false", error: { message: secret } },
+    { threadId: "thr_1", turnId: "turn_1", willRetry: false, error: { message: secret, codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: "503" } } } },
+  ]) {
+    assert.throws(() => normalizeAppServerNotification({ method: "error", params }), (error) => (
+      error.code === "app_server_incompatible"
+      && error.details.reason === "invalid_turn_error"
+      && !JSON.stringify(error).includes(secret)
+    ));
+  }
+});
+
 test("normalizes execution lifecycle and output activity without retaining command content", () => {
   for (const itemType of ["commandExecution", "fileChange"]) {
     for (const [method, type] of [["item/started", "execution_started"], ["item/completed", "execution_completed"]]) {

@@ -1,5 +1,140 @@
 # Merge Readiness
 
+## Current Companion Review (2026-09-11)
+
+This section supersedes the historical source-readiness, branch and scanner
+statements below **only for the current companion change**. Historical runtime
+evidence is retained, not re-attested. This report records pre-commit acceptance;
+the owner subsequently authorized a local commit conditional on all scoped
+checks passing. Push, branch merge and activation are not authorized here.
+
+### Decision and exact scope
+
+The companion's reviewed source and offline regression checks pass. No remaining
+blocking correctness finding was identified in this review's scope. The owner
+approved project-local Gitleaks installation and its fresh changed-file scan
+passed on all 29 candidate files, including the new classifier and tests.
+The source candidate is ready for the authorized local commit, subject to
+final staged-path/content and unchanged-identity checks. This is not production
+activation, full-history scanning or application-wide security certification.
+
+Current checkout: `D:/9Router`, branch `master`, HEAD
+`8aa9e7bc7593f8326eff9840059d753bcdd0e2b6`. Candidate changes are uncommitted,
+not a separate finished branch awaiting merge. Select only this integration's
+source, tests and documentation when preparing the eventual commit. In
+particular, `src/error-classification.js` and `test/error-classification.test.js`
+are new untracked files and must be included with their consumers.
+
+Unrelated `next.config.mjs`, `start-9router.bat`, `.codex-profile-test/`, and
+`.next-backup-*` entries were left untouched and are not part of this acceptance.
+The app's root build/dependencies are not being qualified by this review.
+
+### Review result and additional repairs
+
+The project agent's R8-R10 candidate was independently checked at source digest
+`2c05157f0a2ac98ea768a622783309678cceae88ddd6f9471ea9e6a723f05ebd`; its full
+suite passed 233/233. The review confirmed:
+
+- R8: useful terminal metadata survives empty completion metadata, useful
+  completion metadata wins as a whole, and retryable-only evidence does not
+  become a fabricated terminal quota cause.
+- R9: future error strings/objects/turn kinds and incompatible TurnError union
+  branches fail qualification. Captured canonical schema mutations were made
+  only in memory; the on-disk fixture was not changed.
+- R10: real local session/runtime diagnostic stage/reason survives core,
+  persisted/recovered status and MCP without allowing arbitrary metadata.
+
+Three additional regressions were found and fixed locally with failing tests
+observed before implementation:
+
+1. Missing nested `required` arrays raised TypeError rather than returning
+   incompatibility. Required consumed fields now fail closed without throwing.
+2. An equivalent HTTP status `integer|null` represented with anyOf/oneOf was
+   rejected. Every alternative is now checked; integer/null alternatives and
+   local refs pass while number/string/object alternatives remain rejected.
+3. Old persisted `provider_quota_exceeded` records degraded to protocol_error.
+   The one renamed legacy category now maps to quota_exceeded/provider without
+   carrying old free-form payloads or rewriting records. Read, reconcile,
+   restarted core and MCP status retain the normalized meaning.
+
+These repairs changed only `src/app-server/schema-qualification.js`,
+`src/error-classification.js` and their nearest schema/state regression tests.
+No retry, provider, model allowlist, workspace, approval, ownership or runtime
+registration policy was relaxed.
+
+### Fresh verification after final source changes
+
+All listed executable checks completed with exit 0:
+
+- `npm test`: **236/236**, no failures, cancellations or skips; concurrency 2.
+  Includes real Windows process-tree cleanup, model selection, workspace gates,
+  approval, cancellation, timeout, recovery and redaction regressions.
+- Focused schema/adapter/installation: **52/52**.
+- Focused state/error-classification/MCP: **30/30**.
+- Unchanged fixture-only `policy.test.mjs`: **2/2**. This proves the policy
+  assertions, not live Desktop canary execution or arbitrary workspace access.
+- Canonical schema diagnostic: original accepted, five incompatible mutations
+  rejected without exceptions, two equivalent HTTP-status unions accepted.
+- `node --check`: **51** source/test JavaScript files passed.
+- Scoped `git -c core.safecrlf=false diff --check`: passed.
+- Quick codebase health: the existing PowerShell helper passed PSScriptAnalyzer
+  with zero errors/warnings. Overall WARNING because duplication was deliberately
+  skipped in Quick mode; no Pester tests applicable. Large-file metrics are
+  informational and did not trigger unrelated refactoring.
+
+Reproduction commands from `D:/9Router/integrations/codex-gemini-executor`:
+
+```powershell
+node --test test/schema-qualification.test.js test/adapter.test.js test/installation.test.js
+node --test test/state-store.test.js test/error-classification.test.js test/mcp-bridge.test.js
+npm test
+node --test C:/Users/Admin/Documents/Codex/9router-desktop-canary/policy.test.mjs
+git -c core.safecrlf=false diff --check -- .
+node --input-type=module -e "import {sourceDigest} from './src/qualification.js'; console.log(await sourceDigest('./src'));"
+Get-FileHash -LiteralPath package-lock.json -Algorithm SHA256
+```
+
+Final identity:
+
+- Node: `C:/Program Files/nodejs/node.exe`, `v24.12.0`.
+- Source SHA-256: `8ddcd0a1af691dfdfe2ae26781eb9d0186c23180f38dc96ba602b33560abaf9a`.
+- Test-tree SHA-256: `0f4c99d577f2bb8e2b098ebd040c2a3d94fe52c052c865c5eebeee8c14be8a9a`.
+- Lock SHA-256: `43588d5996984c5920e1129e56aee1cc3d29ad5d3788e296dac008d1fb3cb703`.
+- Companion package.json and package-lock.json remain unchanged against HEAD.
+
+### Remaining limits before integration or activation
+
+- Gitleaks 8.30.1 was installed project-locally after explicit approval, without
+  changing PATH, project dependencies or Codex/MCP configuration. Official release:
+  https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1.
+  Archive SHA-256 `d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e`
+  matches both GitHub asset metadata and the release checksum file. Executable
+  SHA-256 `17157e2ee8b76fc8b1d8bee607a250e34b8a8023c8bc81822d4b5ee4d78fcb7c`
+  matches the project's scanner pin. Windows Defender custom scan completed
+  with no matching detections (signature 1.459.55.0); this is not a safety guarantee.
+- The unchanged `scripts/ai-security-secrets.ps1` scanned an isolated local
+  checkout containing exactly the 29 reviewed candidate files. Gitleaks returned
+  pass/exit 0 with no findings, using full redaction and ignoring inline allow
+  annotations. Root backup/profile/config changes were excluded. Initial report:
+  `C:/tmp/CodexScratch/2026-09-07-mcp-security-tools/secrets-37b7cf59ddb24c9d8f56864c941116fd/gitleaks.json`.
+  A final scan after this documentation update is retained at
+  `C:/tmp/CodexScratch/2026-09-11-gemini-merge-gitleaks/final-gitleaks.json`.
+  Scanner binaries, temporary checkout and reports remain local and must not
+  be staged. The local strict-profile file is absent; this report does not
+  assert an unavailable strict Framework certification.
+- No project dependency changes or installation occurred; there is no new OSV scan or
+  broader application dependency-security claim in this handoff.
+- Live model calls, installed-companion qualification, promotion and Desktop
+  registration were not exercised. Source digest changed; old source-bound
+  qualification evidence must not be reused unchanged.
+- The fixture runner imports a different retained companion tree. Its policy
+  tests are intentionally not proof of adopting this checkout's runtime.
+- No ACL repair, user-data cleanup, push, branch merge or runtime activation
+  is part of this acceptance. Commit authorization is local and scoped only
+  to the reviewed companion candidate.
+
+## Historical Evidence (Earlier Candidates)
+
 ## Final Integration Update (2026-09-08)
 
 The owner selected proportionate security for this personal project. Monaco is

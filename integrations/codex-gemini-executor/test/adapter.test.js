@@ -68,7 +68,7 @@ test("absorbs rejected asynchronous warning delivery", async () => {
   await new Promise((resolve) => setImmediate(resolve));
 });
 
-function generatedSchema({ includeInterrupt = true, includeCompleted = true } = {}) {
+function generatedSchema({ includeInterrupt = true, includeCompleted = true, includeError = true } = {}) {
   const refs = {
     initialize: "#/definitions/InitializeParams",
     "model/list": "#/definitions/ModelListParams",
@@ -78,6 +78,24 @@ function generatedSchema({ includeInterrupt = true, includeCompleted = true } = 
     ...(includeInterrupt ? { "turn/interrupt": "#/definitions/TurnInterruptParams" } : {}),
   };
   const objectDefinition = (properties, required = []) => ({ type: "object", properties, required });
+  const httpInfo = (name) => objectDefinition({
+    [name]: objectDefinition({ httpStatusCode: { type: ["integer", "null"] } }),
+  }, [name]);
+  const codexErrorInfo = {
+    oneOf: [
+      { type: "string", enum: [
+        "contextWindowExceeded", "sessionBudgetExceeded", "usageLimitExceeded", "rateLimitExceeded", "serverOverloaded",
+        "cyberPolicy", "misalignmentPolicyViolation", "internalServerError", "unauthorized", "badRequest",
+        "threadRollbackFailed", "sandboxError", "other",
+      ] },
+      httpInfo("httpConnectionFailed"), httpInfo("responseStreamConnectionFailed"),
+      httpInfo("responseStreamDisconnected"), httpInfo("responseTooManyFailedAttempts"),
+      objectDefinition({ activeTurnNotSteerable: objectDefinition({
+        turnKind: { type: "string", enum: ["review", "compact"] },
+      }, ["turnKind"]) }, ["activeTurnNotSteerable"]),
+    ],
+  };
+  for (const branch of codexErrorInfo.oneOf.filter((entry) => entry.type === "object")) branch.additionalProperties = false;
   return {
     definitions: {
       RequestId: { oneOf: [{ type: "integer" }, { type: "string" }] },
@@ -95,11 +113,24 @@ function generatedSchema({ includeInterrupt = true, includeCompleted = true } = 
         threadId: { type: "string" }, input: { type: "array" }, model: { type: "string" }, effort: { type: "string" },
       }, ["threadId", "input"]),
       TurnInterruptParams: objectDefinition({ threadId: { type: "string" }, turnId: { type: "string" } }, ["threadId", "turnId"]),
-      TurnStartedNotification: objectDefinition({ threadId: { type: "string" }, turn: { type: "object" } }, ["threadId", "turn"]),
+      CodexErrorInfo: codexErrorInfo,
+      TurnError: objectDefinition({
+        message: { type: "string" },
+        codexErrorInfo: { anyOf: [{ $ref: "#/definitions/CodexErrorInfo" }, { type: "null" }] },
+      }, ["message"]),
+      Turn: objectDefinition({
+        id: { type: "string" }, items: { type: "array" },
+        status: { type: "string", enum: ["inProgress", "completed", "interrupted", "failed"] },
+        error: { anyOf: [{ $ref: "#/definitions/TurnError" }, { type: "null" }] },
+      }, ["id", "items", "status"]),
+      TurnStartedNotification: objectDefinition({ threadId: { type: "string" }, turn: { $ref: "#/definitions/Turn" } }, ["threadId", "turn"]),
       AgentMessageDeltaNotification: objectDefinition({
         threadId: { type: "string" }, turnId: { type: "string" }, itemId: { type: "string" }, delta: { type: "string" },
       }, ["threadId", "turnId", "itemId", "delta"]),
-      TurnCompletedNotification: objectDefinition({ threadId: { type: "string" }, turn: { type: "object" } }, ["threadId", "turn"]),
+      ErrorNotification: objectDefinition({
+        error: { $ref: "#/definitions/TurnError" }, threadId: { type: "string" }, turnId: { type: "string" }, willRetry: { type: "boolean" },
+      }, ["error", "threadId", "turnId", "willRetry"]),
+      TurnCompletedNotification: objectDefinition({ threadId: { type: "string" }, turn: { $ref: "#/definitions/Turn" } }, ["threadId", "turn"]),
       ClientRequest: {
         oneOf: Object.entries(refs).map(([method, ref]) => ({
           required: ["id", "method", "params"],
@@ -114,6 +145,7 @@ function generatedSchema({ includeInterrupt = true, includeCompleted = true } = 
         oneOf: [
           ["turn/started", "#/definitions/TurnStartedNotification"],
           ["item/agentMessage/delta", "#/definitions/AgentMessageDeltaNotification"],
+          ...(includeError ? [["error", "#/definitions/ErrorNotification"]] : []),
           ...(includeCompleted ? [["turn/completed", "#/definitions/TurnCompletedNotification"]] : []),
         ].map(([method, ref]) => ({
           required: ["method", "params"],
@@ -148,10 +180,15 @@ function generatedApprovalSchema({ includeFileChange = true } = {}) {
   };
 }
 
-function composedAdapter({ includeInterrupt = true, includeCompleted = true, includeFileChange = true } = {}) {
+function composedAdapter({
+  includeInterrupt = true, includeCompleted = true, includeError = true, includeFileChange = true,
+  mutateStableSchema,
+} = {}) {
   const warnings = [];
+  const calls = [];
   const client = {
     async request(method) {
+      calls.push(method);
       if (method === "initialize") {
         return {
           userAgent: "new-version",
@@ -165,15 +202,18 @@ function composedAdapter({ includeInterrupt = true, includeCompleted = true, inc
     },
     notify() {},
   };
+  const stableSchema = generatedSchema({ includeInterrupt, includeCompleted, includeError });
+  mutateStableSchema?.(stableSchema);
   const driver = createStableHandshakeDriver({
     client,
     schemaQualification: combineSchemaQualifications(
-      qualifyStableSchemaBundle(generatedSchema({ includeInterrupt, includeCompleted })),
+      qualifyStableSchemaBundle(stableSchema),
       qualifyApprovalSchemaBundle(generatedApprovalSchema({ includeFileChange })),
     ),
   });
   return {
     warnings,
+    calls,
     adapter: createAppServerCompatibilityAdapter({
       baseline: { version: "1.1.0", executableSha256: "b".repeat(64) },
       clientInfo: { name: "nine_router_gemini", title: "9Router Gemini", version: "0.1.0" },
@@ -200,5 +240,14 @@ test("composition gates on capabilities while version and hash changes only warn
 
 test("composition fails closed when required notifications or approval requests are absent", async () => {
   await assert.rejects(composedAdapter({ includeCompleted: false }).adapter.check(), { code: "app_server_incompatible" });
+  await assert.rejects(composedAdapter({ includeError: false }).adapter.check(), { code: "app_server_incompatible" });
   await assert.rejects(composedAdapter({ includeFileChange: false }).adapter.check(), { code: "app_server_incompatible" });
+});
+
+test("composition rejects a future consumed error variant before a turn can launch", async () => {
+  const incompatible = composedAdapter({
+    mutateStableSchema: (bundle) => bundle.definitions.CodexErrorInfo.oneOf[0].enum.push("futureErrorInfo"),
+  });
+  await assert.rejects(incompatible.adapter.check(), { code: "app_server_incompatible" });
+  assert.deepEqual(incompatible.calls, ["initialize", "model/list"]);
 });
