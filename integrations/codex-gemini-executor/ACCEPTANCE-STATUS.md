@@ -4,6 +4,37 @@ This is the current consolidation of the chronological evidence in
 UPGRADE-SAFETY.md. This document is not a qualified-combination.json record and
 must not be used to promote a runtime automatically.
 
+## 2026-09-12 qualification round (current)
+
+**Activated identity:** codex `0.154.0-alpha.6.2` (SHA-256 `081e4de4be8e38fa...`)
+via the promotion snapshot
+`C:\Users\Admin\Documents\Codex\9router-gemini-runtime\qualified\appserver-081e4de4be8e\`;
+router BUILD_ID `krXwLgOMmky4REVYzKWjP`; companion source = the D:\9Router
+working tree (structured commandActions forwarding, session-resume
+extensibility fix, Responses adapter spec compliance). Promotion record
+written at `C:\Users\Admin\Documents\Codex\9router-gemini-runtime\qualified-combination.json`
+(13/13 canary checks).
+
+- 11/13 checks from the Stage A/B/C harness (`C:\tmp\CodexScratch\2026-09-11-gemini-live-002c61ad-v1\harness\`,
+  durable copy in the runtime root `qualification-harness\`); desktop canary
+  5/5 turns (accept/resume/decline/cancel/approval-timeout) executed as
+  **operator-delegated scripted canary** — the elicitation decisions were made
+  by the canary runner per user instruction, not by clicking the Desktop UI.
+- `desktopOptionalStartup` is verified as: on-demand executor startup plus the
+  approval host deadline (8s) producing a clean `approval_timeout` with
+  confirmed cleanup. If the original intended semantics differ, re-run.
+- Session-resume root cause fixed in the product: the frozen validated request
+  could not carry `resumeContext` (strict-mode TypeError); `core.js` now keeps
+  an extensible copy. Codex `thread/resume` itself was exonerated by probe.
+- Responses wire fix: `response.completed` must be emitted at finish_reason —
+  deferring to flush races `createDisconnectAwareStream`'s disconnect synthesis
+  and drops the terminal ("stream closed before response.completed"). Guarded
+  by `tests/unit/disconnect-aware-terminal.test.js`.
+- Re-qualification workflow for future codex updates: edit `baseline.mjs` in
+  the harness (2 lines: version + sha, paths), run `stage-c-qualification.mjs`,
+  re-run the desktop canary, rewrite the record. The activated deployment runs
+  the frozen snapshot, so upstream updates do not disturb it.
+
 ## Decision
 
 Source merge preparation is separate from runtime activation. See
