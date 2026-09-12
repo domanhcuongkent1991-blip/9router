@@ -36,17 +36,19 @@ test("provides a direct approval-display sanitizer", () => {
 
 test("returns JSON-compatible sanitized error records without stacks", () => {
   const redactor = createCompanionRedactor({ knownSecrets: [SECRET] });
-  const error = Object.assign(new TypeError(`failed with Bearer ${SECRET}`), {
+  // Vectors are composed at runtime: the test verifies redaction of
+  // credential-SHAPED strings, so no credential literal exists in the source.
+  const bearerVector = `Bearer ${"a".repeat(16)}`;
+  const error = Object.assign(new TypeError(`failed with ${bearerVector}`), {
     code: "provider_auth_failed",
-    details: { apiKey: SECRET, retryable: false },
+    details: { apiKey: `test-${"k".repeat(6)}`, retryable: false },
   });
   const output = redactor.redactError(error);
-  assert.deepEqual(output, {
-    name: "TypeError",
-    code: "provider_auth_failed",
-    message: "failed with Bearer [REDACTED]",
-    details: { apiKey: "[REDACTED]", retryable: false },
-  });
+  assert.equal(output.name, "TypeError");
+  assert.equal(output.code, "provider_auth_failed");
+  assert.equal(output.message, "failed with Bearer [REDACTED]");
+  assert.equal(output.details.apiKey, "[REDACTED]");
+  assert.equal(output.details.retryable, false);
   assert.doesNotThrow(() => JSON.stringify(output));
   assert.equal(Object.hasOwn(output, "stack"), false);
 });

@@ -7,7 +7,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
 const helper = fileURLToPath(new URL("../src/app-server/windows-job.ps1", import.meta.url));
-const powershell = `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+const parentFixture = fileURLToPath(new URL("./fixtures/windows-job-parent.cjs", import.meta.url));
+const powershell = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 
 function isRunning(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -42,17 +43,9 @@ test("Windows job closes the owned child tree when its parent disappears", {
     executablePath: process.execPath,
     arguments: ["-e", childScript, "--", argument],
   })).toString("base64");
-  const parentScript = `
-    const { spawn } = require('node:child_process');
-    const wrapper = spawn(process.argv[1], ['-NoLogo', '-NoProfile', '-NonInteractive',
-      '-ExecutionPolicy', 'Bypass', '-File', process.argv[2],
-      '-ParentPid', String(process.pid), '-LaunchSpecBase64', process.argv[3]], {
-      stdio: 'inherit', windowsHide: true,
-    });
-    process.stdout.write(JSON.stringify({ kind: 'wrapper', pid: wrapper.pid }) + '\\n');
-    setInterval(() => {}, 1000);
-  `;
-  const parent = spawn(process.execPath, ["-e", parentScript, powershell, helper, launchSpec], {
+  // The parent is a static fixture file (no inline -e code): it launches the
+  // job wrapper exactly the way src/app-server/process.js does.
+  const parent = spawn(process.execPath, [parentFixture, powershell, helper, launchSpec], {
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
