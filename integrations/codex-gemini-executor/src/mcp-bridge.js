@@ -103,6 +103,22 @@ function approvalMessage(approval) {
   return Buffer.from(detail, "utf8").subarray(0, 16 * 1024).toString("utf8").replace(/�$/u, "");
 }
 
+// Structured approval facts ride in the requested schema as a read-only const
+// property so clients can decide from the same parsed command Codex will run
+// instead of parsing the display message. Not required: legacy clients that
+// only answer {decision} stay valid.
+function commandApprovalSchema(approval) {
+  return {
+    type: "object",
+    properties: {
+      decision: { type: "string", enum: ["accept", "decline", "cancel"] },
+      commandActions: { type: "string", const: JSON.stringify(approval?.commandActions ?? null) },
+    },
+    required: ["decision"],
+    additionalProperties: false,
+  };
+}
+
 function stateFrom(context) {
   try {
     const request = context?.mcpReq;
@@ -266,12 +282,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
       inputRequests: {
         approval: inputRequired.elicit({
           message: approvalMessage(pending.currentApproval.approval),
-          requestedSchema: {
-            type: "object",
-            properties: { decision: { type: "string", enum: ["accept", "decline", "cancel"] } },
-            required: ["decision"],
-            additionalProperties: false,
-          },
+          requestedSchema: commandApprovalSchema(pending.currentApproval.approval),
         }),
       },
       requestState: token,

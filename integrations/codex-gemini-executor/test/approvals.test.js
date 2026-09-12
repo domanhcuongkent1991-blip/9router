@@ -44,10 +44,11 @@ function fileMessage(overrides = {}) {
   };
 }
 
-function adapterFixture({ decision = "accept", respond, requestDecision, sanitizeForDisplay, timeoutMs = 100 } = {}) {
+function adapterFixture({ decision = "accept", respond, requestDecision, sanitizeForDisplay, sanitizeCommandActions, timeoutMs = 100 } = {}) {
   const responses = [];
   const prompts = [];
   const sanitizeCalls = [];
+  const actionSanitizeCalls = [];
   const adapter = createAppServerApprovalAdapter({
     respond: respond ?? (async (id, result) => responses.push({ id, result })),
     requestDecision: requestDecision ?? (async (prompt) => {
@@ -58,9 +59,17 @@ function adapterFixture({ decision = "accept", respond, requestDecision, sanitiz
       sanitizeCalls.push(value);
       return value === null ? null : "<redacted>";
     }),
+    ...(sanitizeCommandActions === null
+      ? {}
+      : {
+        sanitizeCommandActions: sanitizeCommandActions ?? ((value) => {
+          actionSanitizeCalls.push(value);
+          return value.map((entry) => ({ ...entry, command: "<redacted-action>" }));
+        }),
+      }),
     timeoutMs,
   });
-  return { adapter, responses, prompts, sanitizeCalls };
+  return { adapter, responses, prompts, sanitizeCalls, actionSanitizeCalls };
 }
 
 function assertSanitizedApprovalError(error, reason, stage) {
@@ -165,6 +174,54 @@ test("sanitizes every nullable display field independently before prompting", as
   assert.equal(prompts[0].command, null);
   assert.equal(prompts[0].cwd, null);
   assert.equal(prompts[0].reason, null);
+});
+
+test("forwards sanitized structured command actions on the prompt when the server provides them", async () => {
+  const actions = [
+    { type: "read", command: "Get-Content -Raw marker.txt", name: "marker.txt", path: "C:\\SECRET\\work\\marker.txt" },
+  ];
+  const { adapter, prompts, actionSanitizeCalls } = adapterFixture();
+  await adapter.handle(commandMessage({ params: { commandActions: actions } }), activeTurn);
+  assert.equal(actionSanitizeCalls.length, 1);
+  assert.deepEqual(prompts[0].commandActions, [
+    { type: "read", command: "<redacted-action>", name: "marker.txt", path: "C:\\SECRET\\work\\marker.txt" },
+  ]);
+});
+
+test("omits command actions when the server does not send them or no sanitizer is configured", async () => {
+  const absent = adapterFixture();
+  await absent.adapter.handle(commandMessage(), activeTurn);
+  assert.equal(Object.hasOwn(absent.prompts[0], "commandActions"), false);
+  assert.equal(absent.actionSanitizeCalls.length, 0);
+
+  const unconfigured = adapterFixture({ sanitizeCommandActions: null });
+  await unconfigured.adapter.handle(commandMessage({ params: { commandActions: [{ type: "read", command: "x" }] } }), activeTurn);
+  assert.equal(Object.hasOwn(unconfigured.prompts[0], "commandActions"), false);
+  assert.equal(JSON.stringify(unconfigured.prompts).includes("marker"), false);
+});
+
+test("cancels when the command actions sanitizer fails or returns invalid output", async () => {
+  const failures = [
+    { sanitizeCommandActions: () => { throw new Error("SECRET actions sanitizer"); } },
+    { sanitizeCommandActions: () => "not-an-array" },
+    { sanitizeCommandActions: () => ({ sneaky: true }) },
+    { sanitizeCommandActions: () => [{ type: "read", command: "x".repeat(16 * 1024) }] },
+  ];
+  for (const fixture of failures) {
+    const { adapter, responses } = adapterFixture(fixture);
+    await assert.rejects(
+      adapter.handle(commandMessage({ params: { commandActions: [{ type: "read", command: "SECRET action" }] } }), activeTurn),
+      (error) => assertSanitizedApprovalError(error, "sanitization_failed", "sanitize"),
+    );
+    assert.deepEqual(responses, [{ id: "request_1", result: { decision: "cancel" } }]);
+  }
+});
+
+test("never surfaces command actions on file change approvals", async () => {
+  const { adapter, prompts, actionSanitizeCalls } = adapterFixture();
+  await adapter.handle(fileMessage({ params: { commandActions: [{ type: "read", command: "SECRET action" }] } }), activeTurn);
+  assert.equal(actionSanitizeCalls.length, 0);
+  assert.equal(JSON.stringify(prompts).includes("commandActions"), false);
 });
 
 test("sanitizer, decision-provider, and timeout failures attempt one cancel then fail sanitized", async () => {
@@ -293,6 +350,7 @@ test("validates adapter configuration bounds", () => {
     { respond: null },
     { requestDecision: null },
     { sanitizeForDisplay: null },
+    { sanitizeCommandActions: "not-a-function" },
     { timeoutMs: 0 },
     { timeoutMs: 300_001 },
     { timeoutMs: 1.5 },

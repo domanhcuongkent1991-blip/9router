@@ -229,7 +229,7 @@ test("fails closed on orphan input responses without verified request state", as
   }
 });
 
-function approvalCore(count = 1) {
+function approvalCore(count = 1, approvalOverrides = {}) {
   const decisions = [];
   return {
     decisions,
@@ -242,6 +242,7 @@ function approvalCore(count = 1) {
               type: "command", jobId: "job_approval", threadId: "thr_1", turnId: "turn_1",
               itemId: `item_${index}`, command: `command_${index}`, cwd: "D:\\Repo", reason: "test",
               decisions: ["accept", "decline", "cancel"],
+              ...approvalOverrides,
             }));
           }
           return { jobId: "job_approval", status: "completed", finalAnswer: "done", filesChanged: [], tests: [] };
@@ -374,6 +375,35 @@ test("uses SDK 2.0 input_required for modern approval without push elicitation",
   assert.equal(result.structuredContent.status, "completed");
   assert.deepEqual(approval.decisions, ["accept"]);
   assert.equal(retryContext.pushCalls(), 0);
+});
+
+test("elicitation schema carries sanitized structured command actions without making them required", async () => {
+  const actions = [{ type: "read", command: "Get-Content -Raw marker.txt", name: "marker.txt", path: "D:\\Repo\\marker.txt" }];
+  const server = createGeminiMcpServer({
+    core: approvalCore(1, { commandActions: actions, command: "SECRET wrapped command" }).core,
+    ServerClass: FakeServer,
+    generateCorrelationId: () => "capability_schema",
+  });
+  const first = await server.tools.get("run_gemini_task").handler(
+    { task: "x", workspace: "D:\\Repo" }, modernContext().context,
+  );
+  const { message, requestedSchema } = first.inputRequests.approval.params;
+  assert.match(message, /^Command: SECRET wrapped command\nDirectory: D:\\Repo\nReason: test$/u);
+  assert.equal(requestedSchema.type, "object");
+  assert.deepEqual(requestedSchema.required, ["decision"]);
+  assert.deepEqual(JSON.parse(requestedSchema.properties.commandActions.const), actions);
+  assert.equal(requestedSchema.properties.decision.enum.join(","), "accept,decline,cancel");
+
+  const bare = createGeminiMcpServer({
+    core: approvalCore(1).core,
+    ServerClass: FakeServer,
+    generateCorrelationId: () => "capability_schema_bare",
+  });
+  const bareResult = await bare.tools.get("run_gemini_task").handler(
+    { task: "x", workspace: "D:\\Repo" }, modernContext().context,
+  );
+  const bareSchema = bareResult.inputRequests.approval.params.requestedSchema;
+  assert.equal(bareSchema.properties.commandActions.const, "null");
 });
 
 test("correlates sequential approvals and fails closed on forged request reuse", async () => {

@@ -223,6 +223,7 @@ export async function createInstalledGeminiCompanion({ environment = process.env
       },
       model: request.model,
       sanitizeForDisplay: redactor.sanitizeForDisplay,
+      sanitizeCommandActions: (value) => redactor.redactJson(value),
     });
   };
 

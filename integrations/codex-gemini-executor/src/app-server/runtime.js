@@ -79,6 +79,7 @@ export async function prepareAppServerRuntime({
   loadSchemaQualification,
   model,
   sanitizeForDisplay,
+  sanitizeCommandActions,
   onWarning = () => {},
   requestTimeoutMs = 15_000,
   approvalTimeoutMs = 120_000,
@@ -237,6 +238,7 @@ export async function prepareAppServerRuntime({
           return requestDecision(prompt);
         },
         sanitizeForDisplay,
+        sanitizeCommandActions,
         timeoutMs: approvalTimeoutMs,
       }),
     };

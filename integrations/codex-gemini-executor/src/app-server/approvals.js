@@ -8,6 +8,7 @@ const DECISIONS = Object.freeze(["accept", "decline", "cancel"]);
 const MAX_IDENTIFIER_BYTES = 512;
 const MAX_COMMAND_BYTES = 64 * 1024;
 const MAX_REASON_BYTES = 16 * 1024;
+const MAX_COMMAND_ACTIONS_BYTES = 16 * 1024;
 const MAX_CWD_BYTES = 4096;
 const MAX_TIMEOUT_MS = 300_000;
 const TIMED_OUT = Symbol("approval_timeout");
@@ -94,18 +95,21 @@ function normalizeMessage(message, activeTurn) {
   if (cwd === undefined || (cwd !== null && !win32.isAbsolute(cwd) && !posix.isAbsolute(cwd))) {
     compatibilityFailure(message.method, "invalid_cwd");
   }
-  return { id: message.id, type: "command", params, command, cwd, reason };
+  const commandActions = Array.isArray(params.commandActions) ? params.commandActions : null;
+  return { id: message.id, type: "command", params, command, cwd, reason, commandActions };
 }
 
 export function createAppServerApprovalAdapter({
   respond,
   requestDecision,
   sanitizeForDisplay,
+  sanitizeCommandActions,
   timeoutMs,
 }) {
   if (typeof respond !== "function"
     || typeof requestDecision !== "function"
     || typeof sanitizeForDisplay !== "function"
+    || (sanitizeCommandActions !== undefined && typeof sanitizeCommandActions !== "function")
     || !Number.isInteger(timeoutMs)
     || timeoutMs < 1
     || timeoutMs > MAX_TIMEOUT_MS) {
@@ -153,6 +157,18 @@ export function createAppServerApprovalAdapter({
     return sanitized;
   }
 
+  async function sanitizeCommandActionsField(value, deadline) {
+    if (value === null) return null;
+    if (typeof sanitizeCommandActions !== "function") return null;
+    const sanitized = await deadline.run(() => sanitizeCommandActions(value));
+    if (sanitized === null) return null;
+    const serialized = JSON.stringify(sanitized);
+    if (!Array.isArray(sanitized) || serialized === undefined || Buffer.byteLength(serialized, "utf8") > MAX_COMMAND_ACTIONS_BYTES) {
+      throw new TypeError("invalid command actions sanitizer output");
+    }
+    return sanitized;
+  }
+
   async function handle(message, activeTurn) {
     const normalized = normalizeMessage(message, activeTurn);
     if (activeRequestId !== undefined) {
@@ -171,6 +187,7 @@ export function createAppServerApprovalAdapter({
           const command = await sanitize(normalized.command, MAX_COMMAND_BYTES, deadline);
           const cwd = await sanitize(normalized.cwd, MAX_CWD_BYTES, deadline);
           const reason = await sanitize(normalized.reason, MAX_REASON_BYTES, deadline);
+          const commandActions = await sanitizeCommandActionsField(normalized.commandActions, deadline);
           prompt = {
             type: "command",
             jobId: activeTurn.jobId,
@@ -182,6 +199,7 @@ export function createAppServerApprovalAdapter({
             reason,
             decisions: [...DECISIONS],
           };
+          if (commandActions !== null) prompt.commandActions = commandActions;
         } else {
           const reason = await sanitize(normalized.reason, MAX_REASON_BYTES, deadline);
           prompt = {
