@@ -8,6 +8,7 @@ import { buildChunk } from "../concerns/chunk.js";
 import { buildUsage } from "../concerns/usage.js";
 import { fallbackToolCallId } from "../concerns/toolCall.js";
 import { reasoningDelta, extractReasoningText } from "../concerns/reasoning.js";
+import { buildResponsesCompleted, withItemStatus } from "../../utils/responsesTerminal.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } from "../schema/index.js";
 
 /**
@@ -18,7 +19,12 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
   if (!chunk) {
     return flushEvents(state);
   }
-  
+
+  // Usage arrives on a final choices-less chunk (stream_options.include_usage).
+  if (chunk.usage && typeof chunk.usage === "object") state.chatUsage = chunk.usage;
+  if (!Array.isArray(state.outputItems)) state.outputItems = [];
+  if (state.chatUsage === undefined) state.chatUsage = null;
+
   if (!chunk.choices?.length) return [];
   
   const events = [];
@@ -112,6 +118,11 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
     for (const i in state.msgItemAdded) closeMessage(state, emit, i);
     closeReasoning(state, emit);
     for (const i in state.funcCallIds) closeToolCall(state, emit, i);
+    // Completed must be emitted here, not at flush: the streaming pipeline
+    // terminates the client response when the provider stream ends, before a
+    // deferred flush can run. Usage arrives on a later chunk on some providers
+    // and is therefore only present when the provider bundles it into the
+    // final choices chunk.
     sendCompleted(state, emit);
   }
 
@@ -127,7 +138,7 @@ function startReasoning(state, emit, idx) {
     emit("response.output_item.added", {
       type: "response.output_item.added",
       output_index: idx,
-      item: { id: state.reasoningId, type: RESPONSES_ITEM.REASONING, summary: [] }
+      item: withItemStatus({ id: state.reasoningId, type: RESPONSES_ITEM.REASONING, summary: [] }, "added")
     });
 
     emit("response.reasoning_summary_part.added", {
@@ -173,14 +184,16 @@ function closeReasoning(state, emit) {
       part: { type: RESPONSES_ITEM.SUMMARY_TEXT, text: state.reasoningBuf }
     });
 
+    const reasoningItem = withItemStatus({
+      id: state.reasoningId,
+      type: RESPONSES_ITEM.REASONING,
+      summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text: state.reasoningBuf }]
+    }, "done");
+    state.outputItems.push({ outputIndex: state.reasoningIndex, item: reasoningItem });
     emit("response.output_item.done", {
       type: "response.output_item.done",
       output_index: state.reasoningIndex,
-      item: {
-        id: state.reasoningId,
-        type: RESPONSES_ITEM.REASONING,
-        summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text: state.reasoningBuf }]
-      }
+      item: reasoningItem
     });
   }
 }
@@ -193,7 +206,7 @@ function emitTextContent(state, emit, idx, content) {
     emit("response.output_item.added", {
       type: "response.output_item.added",
       output_index: idx,
-      item: { id: msgId, type: RESPONSES_ITEM.MESSAGE, content: [], role: ROLE.ASSISTANT }
+      item: withItemStatus({ id: msgId, type: RESPONSES_ITEM.MESSAGE, content: [], role: ROLE.ASSISTANT }, "added")
     });
   }
 
@@ -245,15 +258,17 @@ function closeMessage(state, emit, idx) {
       part: { type: RESPONSES_ITEM.OUTPUT_TEXT, annotations: [], logprobs: [], text: fullText }
     });
 
+    const messageItem = withItemStatus({
+      id: msgId,
+      type: RESPONSES_ITEM.MESSAGE,
+      content: [{ type: RESPONSES_ITEM.OUTPUT_TEXT, annotations: [], logprobs: [], text: fullText }],
+      role: ROLE.ASSISTANT
+    }, "done");
+    state.outputItems.push({ outputIndex: parseInt(idx), item: messageItem });
     emit("response.output_item.done", {
       type: "response.output_item.done",
       output_index: parseInt(idx),
-      item: {
-        id: msgId,
-        type: RESPONSES_ITEM.MESSAGE,
-        content: [{ type: RESPONSES_ITEM.OUTPUT_TEXT, annotations: [], logprobs: [], text: fullText }],
-        role: ROLE.ASSISTANT
-      }
+      item: messageItem
     });
   }
 }
@@ -303,14 +318,14 @@ function emitToolCall(state, emit, tc) {
     emit("response.output_item.added", {
       type: "response.output_item.added",
       output_index: tcIdx,
-      item: {
+      item: withItemStatus({
         id: `${custom ? "ctc" : "fc"}_${callId}`,
         type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
         ...(custom ? { input: "" } : { arguments: "" }),
         call_id: callId,
         name: identity.name || "",
         ...(identity.namespace ? { namespace: identity.namespace } : {}),
-      }
+      }, "added")
     });
   }
 
@@ -363,17 +378,19 @@ function closeToolCall(state, emit, idx) {
       });
     }
 
+    const toolCallItem = withItemStatus({
+      id: `${custom ? "ctc" : "fc"}_${callId}`,
+      type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
+      ...(custom ? { input: extractCustomToolInput(args) } : { arguments: args }),
+      call_id: callId,
+      name: identity.name || "",
+      ...(identity.namespace ? { namespace: identity.namespace } : {}),
+    }, "done");
+    state.outputItems.push({ outputIndex: parseInt(idx), item: toolCallItem });
     emit("response.output_item.done", {
       type: "response.output_item.done",
       output_index: parseInt(idx),
-      item: {
-        id: `${custom ? "ctc" : "fc"}_${callId}`,
-        type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
-        ...(custom ? { input: extractCustomToolInput(args) } : { arguments: args }),
-        call_id: callId,
-        name: identity.name || "",
-        ...(identity.namespace ? { namespace: identity.namespace } : {}),
-      }
+      item: toolCallItem
     });
 
     state.funcItemDone[idx] = true;
@@ -384,23 +401,21 @@ function closeToolCall(state, emit, idx) {
 function sendCompleted(state, emit) {
   if (!state.completedSent) {
     state.completedSent = true;
-    emit("response.completed", {
-      type: "response.completed",
-      response: {
-        id: state.responseId,
-        object: "response",
-        created_at: state.created,
-        status: "completed",
-        background: false,
-        error: null
-      }
-    });
+    emit("response.completed", buildResponsesCompleted({
+      responseId: state.responseId,
+      created: state.created,
+      outputItems: state.outputItems ?? [],
+      usage: state.chatUsage ?? null,
+    }));
   }
 }
 
 function flushEvents(state) {
   if (state.completedSent) return [];
-  
+
+  if (!Array.isArray(state.outputItems)) state.outputItems = [];
+  if (state.chatUsage === undefined) state.chatUsage = null;
+
   const events = [];
   const nextSeq = () => ++state.seq;
   const emit = (eventType, data) => {

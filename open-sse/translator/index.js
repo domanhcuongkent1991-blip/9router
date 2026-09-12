@@ -278,6 +278,8 @@ export function initState(sourceFormat) {
       funcItemAdded: {},
       funcArgsDone: {},
       funcItemDone: {},
+      outputItems: [],
+      chatUsage: null,
       customToolNames: new Set(),
       completedSent: false
     };

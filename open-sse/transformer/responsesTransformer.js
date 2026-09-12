@@ -7,6 +7,8 @@
 import fs from "fs";
 import path from "path";
 
+import { buildResponsesCompleted, withItemStatus } from "../utils/responsesTerminal.js";
+
 // Create log directory for responses (Node.js only)
 export function createResponsesLogger(model, logsDir = null) {
   // Skip logging in worker environment (no fs)
@@ -72,6 +74,8 @@ export function createResponsesApiTransformStream(logger = null) {
     funcCallIds: {},
     funcArgsDone: {},
     funcItemDone: {},
+    outputItems: [],
+    chatUsage: null,
     buffer: "",
     completedSent: false
   };
@@ -95,11 +99,11 @@ export function createResponsesApiTransformStream(logger = null) {
       emit(controller, "response.output_item.added", {
         type: "response.output_item.added",
         output_index: idx,
-        item: {
+        item: withItemStatus({
           id: state.reasoningId,
           type: "reasoning",
           summary: []
-        }
+        }, "added")
       });
 
       emit(controller, "response.reasoning_summary_part.added", {
@@ -145,14 +149,16 @@ export function createResponsesApiTransformStream(logger = null) {
         part: { type: "summary_text", text: state.reasoningBuf }
       });
 
+      const reasoningItem = withItemStatus({
+        id: state.reasoningId,
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: state.reasoningBuf }]
+      }, "done");
+      state.outputItems.push({ outputIndex: state.reasoningIndex, item: reasoningItem });
       emit(controller, "response.output_item.done", {
         type: "response.output_item.done",
         output_index: state.reasoningIndex,
-        item: {
-          id: state.reasoningId,
-          type: "reasoning",
-          summary: [{ type: "summary_text", text: state.reasoningBuf }]
-        }
+        item: reasoningItem
       });
     }
   };
@@ -180,15 +186,17 @@ export function createResponsesApiTransformStream(logger = null) {
         part: { type: "output_text", annotations: [], logprobs: [], text: fullText }
       });
 
+      const messageItem = withItemStatus({
+        id: msgId,
+        type: "message",
+        content: [{ type: "output_text", annotations: [], logprobs: [], text: fullText }],
+        role: "assistant"
+      }, "done");
+      state.outputItems.push({ outputIndex: parseInt(idx), item: messageItem });
       emit(controller, "response.output_item.done", {
         type: "response.output_item.done",
         output_index: parseInt(idx),
-        item: {
-          id: msgId,
-          type: "message",
-          content: [{ type: "output_text", annotations: [], logprobs: [], text: fullText }],
-          role: "assistant"
-        }
+        item: messageItem
       });
     }
   };
@@ -205,16 +213,18 @@ export function createResponsesApiTransformStream(logger = null) {
         arguments: args
       });
 
+      const toolCallItem = withItemStatus({
+        id: `fc_${callId}`,
+        type: "function_call",
+        arguments: args,
+        call_id: callId,
+        name: state.funcNames[idx] || ""
+      }, "done");
+      state.outputItems.push({ outputIndex: parseInt(idx), item: toolCallItem });
       emit(controller, "response.output_item.done", {
         type: "response.output_item.done",
         output_index: parseInt(idx),
-        item: {
-          id: `fc_${callId}`,
-          type: "function_call",
-          arguments: args,
-          call_id: callId,
-          name: state.funcNames[idx] || ""
-        }
+        item: toolCallItem
       });
 
       state.funcItemDone[idx] = true;
@@ -225,17 +235,12 @@ export function createResponsesApiTransformStream(logger = null) {
   const sendCompleted = (controller) => {
     if (!state.completedSent) {
       state.completedSent = true;
-      emit(controller, "response.completed", {
-        type: "response.completed",
-        response: {
-          id: state.responseId,
-          object: "response",
-          created_at: state.created,
-          status: "completed",
-          background: false,
-          error: null
-        }
-      });
+      emit(controller, "response.completed", buildResponsesCompleted({
+        responseId: state.responseId,
+        created: state.created,
+        outputItems: state.outputItems,
+        usage: state.chatUsage,
+      }));
     }
   };
 
@@ -262,6 +267,11 @@ export function createResponsesApiTransformStream(logger = null) {
           parsed = JSON.parse(dataStr);
         } catch {
           continue;
+        }
+
+        // Usage arrives on a final choices-less chunk (stream_options.include_usage).
+        if (parsed.usage && typeof parsed.usage === "object") {
+          state.chatUsage = parsed.usage;
         }
 
         if (!parsed.choices?.length) continue;
@@ -340,7 +350,7 @@ export function createResponsesApiTransformStream(logger = null) {
               emit(controller, "response.output_item.added", {
                 type: "response.output_item.added",
                 output_index: idx,
-                item: { id: msgId, type: "message", content: [], role: "assistant" }
+                item: withItemStatus({ id: msgId, type: "message", content: [], role: "assistant" }, "added")
               });
             }
 
@@ -387,13 +397,13 @@ export function createResponsesApiTransformStream(logger = null) {
               emit(controller, "response.output_item.added", {
                 type: "response.output_item.added",
                 output_index: tcIdx,
-                item: {
+                item: withItemStatus({
                   id: `fc_${newCallId}`,
                   type: "function_call",
                   arguments: "",
                   call_id: newCallId,
                   name: state.funcNames[tcIdx] || ""
-                }
+                }, "added")
               });
             }
 
@@ -419,6 +429,9 @@ export function createResponsesApiTransformStream(logger = null) {
           for (const i in state.msgItemAdded) closeMessage(controller, i);
           closeReasoning(controller);
           for (const i in state.funcCallIds) closeToolCall(controller, i);
+          // Completed must be emitted here, not at flush: the streaming
+          // pipeline terminates the client response when the provider stream
+          // ends, before a deferred flush can run.
           sendCompleted(controller);
         }
       }
