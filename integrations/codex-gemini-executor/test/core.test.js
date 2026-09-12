@@ -310,6 +310,42 @@ test("does not acquire a lease or create a runtime when compatibility fails", as
   assert.equal(JSON.stringify(result).includes(SECRET), false);
 });
 
+test("resume context attached during runtime preparation reaches workspace preparation", async () => {
+  // The validated request is frozen at the validation boundary; the runtime
+  // preparation attaches request.resumeContext for session resume and the
+  // workspace manager must still observe it (job.request stays extensible).
+  let preparedRequest;
+  let workspaceRequest;
+  const core = createGeminiCompanionCore({
+    validateRequest: async () => Object.freeze({
+      task: "x", workspace: "D:\\Repo", effort: "medium", access: "read-only", timeoutMinutes: 30, sessionId: "sess_1",
+    }),
+    prepareRuntime: async ({ request }) => {
+      request.resumeContext = { executionWorkspace: request.workspace, worktreePath: null, head: null };
+      preparedRequest = request;
+      return {
+        compatibility: { status: "compatible", warnings: [] },
+        run: async () => ({ finalAnswer: "ok", filesChanged: [], tests: [] }),
+        cancel: async () => {},
+        dispose: async () => {},
+      };
+    },
+    workspaceManager: {
+      prepare: async (request) => {
+        workspaceRequest = request;
+        return { executionWorkspace: request.workspace, worktreePath: null, head: null };
+      },
+    },
+    workspaceLeases: createWorkspaceLeaseManager(),
+    redactor: createCompanionRedactor({ knownSecrets: [SECRET] }),
+    generateJobId: () => "job_1",
+  });
+  const result = await core.runGeminiTask({ ...baseRequest, sessionId: "sess_1" });
+  assert.equal(result.status, "completed");
+  assert.equal(preparedRequest.resumeContext?.executionWorkspace, "D:\\Repo");
+  assert.equal(workspaceRequest.resumeContext?.executionWorkspace, "D:\\Repo");
+});
+
 test("publishes approval state, bounds output, and ignores events after completion", async () => {
   let releaseRuntime;
   const hold = new Promise((resolve) => { releaseRuntime = resolve; });

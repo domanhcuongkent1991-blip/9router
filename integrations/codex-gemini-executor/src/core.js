@@ -460,7 +460,12 @@ export function createGeminiCompanionCore({
       if (typeof executionHooks?.onStarted === "function") {
         try { await executionHooks.onStarted(jobId); } catch { /* progress reporting is non-gating */ }
       }
-      job.request = await awaitInterruptible(job, () => validateRequest(rawRequest));
+      // Unfrozen shallow copy: prepareRuntime implementations attach
+      // request.resumeContext (session resume) on this object; the validated
+      // request itself is frozen at the validation boundary.
+      job.request = {
+        ...await awaitInterruptible(job, () => validateRequest(rawRequest)),
+      };
       armHardTimer(job);
       let compatibility;
       if (usesPreparedRuntime) {
