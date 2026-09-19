@@ -36,6 +36,23 @@ Release: `03b8dcf1a4a5`; source digest:
   terminal.
 - Final host evidence matched App Server `codex-cli 0.155.0-alpha.9.2` with SHA-256
   `bc45017e8239dc150258f69309ced9df6bbcdf5b8e4f346decf780ac0999e226`.
+- Post-restart profile diagnosis confirmed the running Desktop App Server is
+  owned by `Admin`, with no explicit `--profile`. Its executable at
+  `C:\Users\Admin\AppData\Local\OpenAI\Codex\bin\247581e40ee272fb\codex.exe`
+  has the same version and SHA-256 as the fixed plugin App Server authority.
+  The shell runs as `CodexSandboxOffline`, whose Windows profile directory is
+  `C:\Users\CodexSandboxOffline`, despite `USERPROFILE=C:\Users\Admin`.
+  With `CODEX_HOME` unset, authority `mcp get` reports no server; setting it only
+  for the probe to `C:\Users\Admin\.codex` returns the exact candidate entrypoint
+  and bootstrap runtime. This is a shell configuration-context mismatch, not a
+  missing Desktop registration. The running process environment was not read.
+- The actual Desktop MCP status tool re-read the completed canary job above after
+  restart, returning the same `21 bytes` answer, canonical model and
+  `filesChanged=[]`. No new model call or configuration change was needed for
+  this diagnosis. Current preflight passes all config, credential-presence,
+  scratch, router and release identity checks; it correctly remains HOLD with
+  `qualification_record_missing` and `qualification_stale` because the general
+  scoped-combination record is absent.
 - Fixed two real wire defects: recovery fields missing from the strict MCP
   output schema and internal `scoped-edit` leaking into public MCP output.
 - Qualification policy v2 binds release location, endpoint, provider and model

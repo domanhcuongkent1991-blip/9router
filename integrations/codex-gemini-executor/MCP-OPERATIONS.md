@@ -8,8 +8,8 @@ và `qualified-scoped-bootstrap.json` là evidence có identity; không chỉnh 
 Trạng thái mới nhất và đường dẫn evidence: [ACCEPTANCE-STATUS.md](ACCEPTANCE-STATUS.md).
 Bootstrap chỉ cấp đúng task đọc marker cố định; không cấp quyền task tùy ý hoặc sửa
 file. Preflight trả `readiness: HOLD` ngay cả khi các kiểm tra preflight đạt, vì
-Desktop acceptance là một gate riêng. Hiện mới có candidate trực tiếp đạt, chưa
-chuyển registration Desktop.
+Desktop acceptance là một gate riêng. Registration Desktop hiện trỏ tới candidate
+bootstrap và fixed read-only canary đã đạt; general qualification vẫn HOLD.
 
 ## Kiểm tra trước khi chạy
 
@@ -151,6 +151,44 @@ General qualification giữ `desktopGrantAccept` và `desktopGrantDeclineCancel`
 ở scoped backend; status sau restart là đọc kết quả đã lưu, không phải resume task.
 
 ## Chẩn đoán nhanh
+
+### Shell báo không có MCP nhưng Desktop vẫn gọi được
+
+Kiểm tra Windows identity, thư mục profile thực và `CODEX_HOME` trước khi sửa
+registration. Trên host này, shell sandbox chạy dưới `CodexSandboxOffline`, còn
+App Server Desktop chạy dưới `Admin`. `USERPROFILE` trong shell có thể vẫn là
+`C:\Users\Admin`; riêng biến này không chứng minh CLI đang đọc config của Admin.
+`-c/--config` là ghi đè tùy chọn `key=value`, không phải đường dẫn file config.
+
+Dùng đúng executable authority và đặt `CODEX_HOME` chỉ trong process kiểm tra;
+khôi phục sau lệnh. Chỉ xuất các trường được chọn, không in toàn bộ JSON có env:
+
+```powershell
+$previousCodexHome = $env:CODEX_HOME
+try {
+    $env:CODEX_HOME = 'C:\Users\Admin\.codex'
+    $mcpJson = & 'C:\Users\Admin\.codex\plugins\.plugin-appserver\codex.exe' mcp get nine-router-gemini --json 2>$null
+    if ($LASTEXITCODE -ne 0) { throw 'MCP lookup failed in explicit Admin home' }
+    $mcp = ($mcpJson -join "`n") | ConvertFrom-Json
+    [pscustomobject]@{
+        name = $mcp.name
+        enabled = $mcp.enabled
+        command = $mcp.transport.command
+        entrypoint = $mcp.transport.args
+        cwd = $mcp.transport.cwd
+        runtimeRoot = $mcp.transport.env.NINEROUTER_RUNTIME_ROOT
+    }
+} finally {
+    $env:CODEX_HOME = $previousCodexHome
+}
+```
+
+Đối chiếu entrypoint/runtime root với candidate đã duyệt và kiểm tra tool/status
+trong task Desktop. Không suy ra Desktop thiếu MCP từ CLI ở home khác; không đổi
+profile toàn cục, reinstall hoặc restart để sửa một phép kiểm tra sai context.
+CLI tìm thấy registration cũng chưa chứng minh approval UI hoặc general
+qualification đạt. Sau update, xác minh version/hash của executable Desktop đang
+chạy và authority riêng biệt; không mặc định hai bản luôn giống nhau.
 
 | Mã/symptom | Xử lý |
 | --- | --- |
