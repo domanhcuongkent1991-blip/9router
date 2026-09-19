@@ -444,7 +444,8 @@ export async function createInstalledGeminiCompanion({ environment = process.env
   const prepareRuntime = async ({ jobId, request }) => {
     currentQualification = await qualify();
     if (request.sessionId) request.resumeContext = await sessions.load(request.sessionId, request, currentQualification.fingerprint);
-    const isolated = await childHome.prepare(childEnvironment(environment, config.apiKey), config.fixedModel);
+    const approvalPolicy = request.access === "read-only" ? "never" : "on-request";
+    const isolated = await childHome.prepare(childEnvironment(environment, config.apiKey), config.fixedModel, approvalPolicy);
     const schemaDirectory = win32.join(config.worktreeRoot, `${jobId}-schema`);
     return prepareAppServerRuntime({
       executablePath: config.executablePath,
