@@ -104,3 +104,17 @@ export function validatePublicRouterUrl(rawUrl) {
 export function assertPublicRouterEndpoint(rawUrl) {
   parseRouterUrl(rawUrl, { allowPath: true });
 }
+
+// Installation-owned endpoint only. No arbitrary private/LAN hosts, localhost
+// DNS aliases or alternate loopback encodings; callers cannot supply this URL.
+export function validateConfiguredRouterUrl(rawUrl) {
+  if (rawUrl === "http://127.0.0.1:20128" || rawUrl === "http://127.0.0.1:20128/") {
+    return "http://127.0.0.1:20128";
+  }
+  return validatePublicRouterUrl(rawUrl);
+}
+
+export function assertConfiguredRouterEndpoint(rawUrl) {
+  if (rawUrl === "http://127.0.0.1:20128/v1/responses") return;
+  assertPublicRouterEndpoint(rawUrl);
+}

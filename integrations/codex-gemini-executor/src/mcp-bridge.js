@@ -58,6 +58,10 @@ const resultSchema = z.object({
   updatedAt: z.string().max(128).optional(),
   finalAnswer: z.string().max(65_536).optional(),
   filesChanged: z.array(z.string().max(4096)).max(1024).optional(),
+  recoveryRequired: z.boolean().optional(),
+  recoveryId: z.string().max(512).optional(),
+  recoverySources: z.array(z.enum(["journal", "cleanup", "unknown"])).max(3).optional(),
+  recoveryOperationIds: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,128}$/u)).max(16).optional(),
   tests: z.array(z.union([z.string().max(16_384), z.record(z.string(), z.unknown())])).max(256).optional(),
   output: z.string().max(32_768).optional(),
   access: z.enum(["read-only", "workspace-write"]).optional(),
@@ -99,8 +103,11 @@ const resultSchema = z.object({
 }).strict();
 
 function toolResult(value) {
-  const normalized = value !== null && typeof value === "object" && Object.hasOwn(value, "error")
-    ? { ...value, error: normalizePublicError(value.error) }
+  const normalized = value !== null && typeof value === "object"
+    ? { ...value,
+      ...(Object.hasOwn(value, "error") ? { error: normalizePublicError(value.error) } : {}),
+      ...(value.access === "scoped-edit" ? { access: "workspace-write" } : {}),
+    }
     : value;
   const parsed = resultSchema.parse(normalized);
   return {

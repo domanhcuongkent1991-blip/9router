@@ -22,6 +22,35 @@ class FakeServer {
   registerTool(name, config, handler) { this.tools.set(name, { config, handler }); }
 }
 
+test("MCP carries broker recovery metadata on run, status and cancel", async () => {
+  const snapshot = {
+    jobId: "job_broker_wire", status: "completed", finalAnswer: "19 bytes",
+    filesChanged: [], tests: [], recoveryRequired: false, recoveryOperationIds: [],
+  };
+  const core = {
+    runGeminiTask: async (_request, hooks) => { await hooks.onStarted(snapshot.jobId); return snapshot; },
+    getGeminiStatus: () => snapshot,
+    cancelGeminiTask: async () => snapshot,
+  };
+  const server = createGeminiMcpServer({ core, ServerClass: FakeServer });
+  const result = await server.tools.get("run_gemini_task").handler(
+    { task: "read marker", workspace: "D:\\Repo" }, { mcpReq: { requestState: () => undefined } },
+  );
+  assert.deepEqual(result.structuredContent, snapshot);
+  Object.assign(snapshot, {
+    status: "failed", recoveryRequired: true, recoveryId: "recovery_job_broker_wire",
+    recoverySources: ["journal", "cleanup"], recoveryOperationIds: ["op_1"],
+    access: "scoped-edit",
+  });
+  for (const name of ["get_gemini_status", "cancel_gemini_task"]) {
+    const status = await server.tools.get(name).handler({ job_id: snapshot.jobId });
+    assert.equal(status.structuredContent.recoveryRequired, true);
+    assert.deepEqual(status.structuredContent.recoverySources, ["journal", "cleanup"]);
+    assert.deepEqual(status.structuredContent.recoveryOperationIds, ["op_1"]);
+    assert.equal(status.structuredContent.access, "workspace-write");
+  }
+});
+
 test("registers exactly three bounded tools and rejects routing overrides", async () => {
   const core = {
     async runGeminiTask(request, hooks) { await hooks.onStarted("job_1"); return { jobId: "job_1", status: "completed", finalAnswer: "done", filesChanged: [], tests: [] }; },

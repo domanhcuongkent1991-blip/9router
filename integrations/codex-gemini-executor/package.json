@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test --test-concurrency=2 test/*.test.js",
+    "test:preflight": "node scripts/test-preflight.js",
+    "mcp:preflight": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Preflight-Mcp.ps1",
+    "test": "node scripts/test-preflight.js && node --test --test-concurrency=2 test/*.test.js",
     "test:adapter": "node --test --test-concurrency=2 test/compatibility.test.js test/adapter.test.js test/startup.test.js"
   },
   "engines": {

@@ -60,9 +60,10 @@ function writeCall(callId, { oldText = "old", newText = "new" } = {}) {
   });
 }
 
-test("validates the public router URL and rejects loopback or credential-bearing URLs", () => {
+test("validates the configured router URL and rejects unapproved local or credential-bearing URLs", () => {
   assert.equal(validateRouterBaseUrl("https://router.example.test"), "https://router.example.test/v1/responses");
-  assert.throws(() => validateRouterBaseUrl("http://127.0.0.1:20128"), { code: "invalid_request" });
+  assert.equal(validateRouterBaseUrl("http://127.0.0.1:20128"), "http://127.0.0.1:20128/v1/responses");
+  assert.throws(() => validateRouterBaseUrl("http://127.0.0.1:20129"), { code: "invalid_request" });
   assert.throws(() => validateRouterBaseUrl("http://user:pass@router.example.test"), { code: "invalid_request" });
   assert.throws(() => validateRouterBaseUrl("https://router.example.test/api"), { code: "invalid_request" });
 });

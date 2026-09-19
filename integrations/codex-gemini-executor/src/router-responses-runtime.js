@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { assertPublicRouterEndpoint, validatePublicRouterUrl } from "./router-transport.js";
+import { assertConfiguredRouterEndpoint, validateConfiguredRouterUrl } from "./router-transport.js";
 
 const MAX_ROUNDS = 20;
 const MAX_TOOL_CALLS = 100;
@@ -55,7 +55,7 @@ function clone(value) {
 
 export function validateRouterBaseUrl(value) {
   let base;
-  try { base = validatePublicRouterUrl(value); } catch { fail("invalid_request", "router_base_url_invalid"); }
+  try { base = validateConfiguredRouterUrl(value); } catch { fail("invalid_request", "router_base_url_invalid"); }
   return `${base}/v1/responses`;
 }
 
@@ -403,7 +403,7 @@ export function createRouterResponsesRuntime({
     const itemId = `http_${roundNumber}`;
     try {
       await onEvent({ type: "execution_started", itemId });
-      assertPublicRouterEndpoint(endpoint);
+      assertConfiguredRouterEndpoint(endpoint);
       let response;
       try {
         response = await fetchImpl(endpoint, {

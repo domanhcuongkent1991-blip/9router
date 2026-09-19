@@ -9,6 +9,7 @@ import { createInstalledGeminiCompanion } from "../src/installation.js";
 import { createRouterResponsesRuntime } from "../src/router-responses-runtime.js";
 import { applyRecovery, summarizeRecoveryJournal } from "../src/file-broker.js";
 import { createScopedIdentity, sourceDigest, REQUIRED_SCOPED_CANARY_CHECKS } from "../src/scoped-qualification.js";
+import { ensureTestScratchRoot } from "./scratch-root.js";
 
 const hash = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -33,8 +34,7 @@ test("only a matching completed restore resolves the source operation", async ()
 
 for (const cleanupFails of [false, true]) {
   test(`retains actual applied-sync failure across status and restart; cleanup failure=${cleanupFails}`, async () => {
-    const scratch = "C:\\tmp\\CodexScratch";
-    await fs.mkdir(scratch, { recursive: true });
+    const scratch = await ensureTestScratchRoot({ prefix: ".codex-recovery-probe-" });
     const root = await fs.mkdtemp(join(scratch, "2026-09-09-kent-recovery-lifecycle-"));
     const workspace = join(root, "workspace");
     const runtimeRoot = join(root, "runtime");
@@ -51,6 +51,7 @@ for (const cleanupFails of [false, true]) {
         companionSha256: await sourceDigest(sourceDirectory),
         dependencyLockSha256: hash(await fs.readFile(join(sourceDirectory, "..", "package-lock.json"))),
         router, model: "fixture",
+        routerBaseUrl: "https://router.example.test",
       });
       await fs.writeFile(join(runtimeRoot, "qualified-scoped-combination.json"), JSON.stringify({
         schemaVersion: 2, identity, approvedAt: new Date().toISOString(),

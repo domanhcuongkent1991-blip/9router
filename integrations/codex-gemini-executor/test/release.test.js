@@ -6,12 +6,13 @@ import { join } from "node:path";
 
 import { ReleaseError, buildRelease, verifyRelease } from "../src/release.js";
 import { sourceDigest } from "../src/scoped-qualification.js";
+import { ensureTestScratchRoot } from "./scratch-root.js";
 
-const SCRATCH = "C:\\tmp\\ZCodeScratch\\nine-router-gemini-stabilize";
 const GIT = { gitHead: "9b9ce0877de1b28c118698aa6f1f7bd976f4b73d", gitDirty: true, uncommittedFileCount: 26 };
 
 async function makeTree() {
-  const root = await mkdtemp(join(SCRATCH, "release-test-"));
+  const scratch = await ensureTestScratchRoot({ prefix: ".codex-release-probe-" });
+  const root = await mkdtemp(join(scratch, "release-test-"));
   const src = join(root, "src");
   await mkdir(join(src, "app-server"), { recursive: true });
   await writeFile(join(src, "core.js"), "export const core = 1;\n");
@@ -89,5 +90,30 @@ test("fails closed when the lock digest or manifest integrity breaks", async () 
     await assert.rejects(verifyRelease({ ...manifest, companionSha256: "e".repeat(64) }, { sourceDirectory: src, lockPath }),
       (error) => error.details.reason === "companion_source_drift");
     await assert.rejects(verifyRelease(null, { sourceDirectory: src, lockPath }), { code: "release_manifest_invalid" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("editor hook artifacts cannot alter source identity or enter the release manifest", async () => {
+  const { root, src, lockPath } = await makeTree();
+  try {
+    const before = await buildRelease({ sourceDirectory: src, lockPath, gitInfo: GIT });
+    await mkdir(join(src, ".mimosa"));
+    await writeFile(join(src, ".mimosa", "hook.json"), "temporary tooling state");
+    const after = await buildRelease({ sourceDirectory: src, lockPath, gitInfo: GIT });
+    assert.equal(before.releaseId, after.releaseId);
+    assert.equal(before.companionSha256, after.companionSha256);
+    assert.equal(after.sourceManifest.some((file) => file.path.includes(".mimosa")), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("binds runtime identity into release provenance", async () => {
+  const { root, src, lockPath } = await makeTree();
+  const runtimeIdentity = { node: { path: "C:\\Program Files\\nodejs\\node.exe", version: "v24.12.0" }, router: { version: "0.5.81", buildId: "build", contractVersion: 1 }, model: "ag/gemini-3.8-flash" };
+  try {
+    const manifest = await buildRelease({ sourceDirectory: src, lockPath, gitInfo: GIT, runtimeIdentity });
+    const verified = await verifyRelease(manifest, { sourceDirectory: src, lockPath });
+    assert.equal(verified.ok, true);
+    await assert.rejects(verifyRelease({ ...manifest, runtimeIdentity: { ...runtimeIdentity, model: "ag/other" } }, { sourceDirectory: src, lockPath }),
+      (error) => error.details.reason === "release_digest_drift");
   } finally { await rm(root, { recursive: true, force: true }); }
 });

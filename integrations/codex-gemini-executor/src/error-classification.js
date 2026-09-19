@@ -36,6 +36,9 @@ export const PUBLIC_ERROR_REASONS = Object.freeze([
   "router_identity_unavailable", "runtime_changed_during_setup", "sanitization_failed", "schema_too_large",
   "stderr_too_large", "thread_id_mismatch", "turn_start_mismatch", "runtime_unavailable", "no_active_turn",
   "handshake_failed", "unknown_failure", "usage_limit", "version_too_large",
+  "scoped_combination_not_qualified", "scoped_bootstrap_not_qualified", "scoped_bootstrap_request_denied",
+  "scoped_qualification_record_missing", "scoped_identity_invalid", "release_manifest_mismatch",
+  "release_provenance_missing",
 ]);
 export const PUBLIC_ERROR_FIELDS = Object.freeze(["candidate", "model", "workspace"]);
 

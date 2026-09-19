@@ -6,10 +6,10 @@ import { join } from "node:path";
 
 import { applyRecovery, createFileBroker, previewRecovery, summarizeRecoveryJournal } from "../src/file-broker.js";
 import { createGrant, resolveScope } from "../src/job-scope.js";
+import { ensureTestScratchRoot } from "./scratch-root.js";
 
 async function fixture({ allowCreate = true } = {}) {
-  const scratchRoot = "C:\\tmp\\CodexScratch";
-  await mkdir(scratchRoot, { recursive: true });
+  const scratchRoot = await ensureTestScratchRoot({ prefix: ".codex-file-broker-probe-" });
   const workspace = await mkdtemp(join(scratchRoot, "2026-09-08-gemini-scoped-edit-broker-"));
   await mkdir(join(workspace, "src"));
   await writeFile(join(workspace, "src", "auth.js"), Buffer.from("\uFEFFold\r\nsecond\r\n", "utf8"));

@@ -220,6 +220,9 @@ async function createScopedResponsesCompanion({ config, environment, dependencie
       )).digest("hex"),
       router: routerIdentity,
       model: config.fixedModel,
+      allowedModels: config.allowedModels,
+      routerBaseUrl: config.routerBaseUrl,
+      sourceDirectory,
     });
     if (!requireQualification) return { identity, fingerprint: "unqualified-canary" };
     let approval;

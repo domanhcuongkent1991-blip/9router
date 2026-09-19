@@ -65,6 +65,17 @@ test("rejects stale identity evidence", () => {
   });
 });
 
+test("binds source location, endpoint, provider and sorted model allowlist", () => {
+  const current = identity();
+  for (const change of [{ sourceDirectory: "C:\\other\\src" }, { routerBaseUrl: "https://router.example.test" },
+    { allowedModels: ["ag/gemini-test", "ag/other"] }]) {
+    assert.throws(() => requireScopedQualification(current, evidence(identity(change))));
+  }
+  assert.throws(() => requireScopedQualification(current, evidence({ ...current, provider: "other" })));
+  assert.throws(() => requireScopedQualification(current, evidence({ ...current, policyVersion: 1 })));
+  assert.throws(() => requireScopedQualification(current, { ...evidence(current), mode: "bootstrap" }));
+});
+
 test("rejects changed router buildId evidence", () => {
   const current = identity();
   assert.throws(() => requireScopedQualification(current,

@@ -4,7 +4,39 @@ This is the current consolidation of the chronological evidence in
 UPGRADE-SAFETY.md. This document is not a qualified-combination.json record and
 must not be used to promote a runtime automatically.
 
-## Current MCP Remediation Status (2026-09-12)
+## Current candidate status (2026-09-19)
+
+**HOLD for Desktop activation; candidate direct MCP execution verified.**
+Provider/model remain `nine_router` / `ag/gemini-3.8-flash`.
+Router is `0.5.81`, BUILD_ID `hzoyTQX0BWYc2RS2-Vf50`; Node is
+`C:\Program Files\nodejs\node.exe`, `v24.12.0`.
+
+Candidate: `C:\Users\Admin\Documents\Codex\9router-gemini-runtime\candidates\candidate-cbce1116-48b7-46a0-84c6-06039289075d`.
+Release: `03b8dcf1a4a5`; source digest:
+`9890f487645f30ab24fe71cc37cb394d06baa173fbb97c68a89bfd73e769ee01`.
+
+- Snapshot offline suite: **347/347**, no skips; log retained in
+  `C:\tmp\CodexScratch\2026-09-19-mcp-stability\candidate-cbce1116-offline.log`.
+- Live candidate canary passed read-only, write accept, write decline,
+  cancellation, restart status and cleanup. Approval decisions were scripted,
+  not Desktop UI decisions.
+- Candidate stdio report passed initialize, exactly three tools, fixed bootstrap
+  read-only task, status, terminal cancel, status after a new process and clean
+  shutdown. Bootstrap evidence grants only the fixed marker task.
+- Fixed two real wire defects: recovery fields missing from the strict MCP
+  output schema and internal `scoped-edit` leaking into public MCP output.
+- Qualification policy v2 binds release location, endpoint, provider and model
+  allowlist. Old policy v1 records cannot be promoted unchanged.
+
+The active Desktop registration still points to its prior release. No Desktop
+restart, configuration switch or general qualification promotion is attested.
+Remaining gates are fresh Desktop candidate discovery, approval accept/decline/
+cancel and optional startup behavior. OSV coverage is limited because the
+project-local scanner is absent; no dependencies were installed or changed.
+
+See [MCP-OPERATIONS.md](MCP-OPERATIONS.md) for commands and update boundaries.
+
+## Historical MCP Remediation Status (2026-09-12)
 
 Offline source verification is current: checkout HEAD is
 `9b9ce0877de1b28c118698aa6f1f7bd976f4b73d`, `npm test` is **242/242**, and the

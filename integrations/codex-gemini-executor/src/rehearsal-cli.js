@@ -11,7 +11,7 @@ import { promoteScopedQualification } from "./qualification-cli.js";
 
 const sourceDirectory = fileURLToPath(new URL("./", import.meta.url));
 const lockPath = win32.join(sourceDirectory, "..", "package-lock.json");
-const scratchBase = "C:\\tmp\\ZCodeScratch\\";
+const scratchBase = "C:\\tmp\\CodexScratch\\";
 const PRODUCTION_RUNTIME_ROOT = "C:\\Users\\Admin\\Documents\\Codex\\9router-gemini-runtime";
 const REHEARSAL_ROUTER = Object.freeze({ version: "rehearsal", buildId: "rehearsal", contractVersion: 1 });
 
@@ -21,12 +21,14 @@ function rehearsalRootError(reason) {
   });
 }
 
-function requireScratchRoot(scratchRoot) {
-  if (typeof scratchRoot !== "string" || !win32.isAbsolute(scratchRoot)) {
+function requireScratchRoot(scratchRoot, scratchBase) {
+  if (typeof scratchRoot !== "string" || !/^[A-Za-z]:[\\/]/u.test(scratchRoot)
+    || typeof scratchBase !== "string" || !/^[A-Za-z]:[\\/]/u.test(scratchBase)) {
     throw rehearsalRootError("absolute_path_required");
   }
   const normalized = win32.normalize(scratchRoot).toLowerCase();
-  if (!normalized.startsWith(scratchBase.toLowerCase())) throw rehearsalRootError("scratch_base_required");
+  const normalizedBase = win32.normalize(scratchBase).toLowerCase().replace(/[\\/]+$/u, "");
+  if (normalizedBase.length <= 2 || !normalized.startsWith(`${normalizedBase}\\`)) throw rehearsalRootError("scratch_base_required");
   if (normalized.startsWith(win32.normalize(PRODUCTION_RUNTIME_ROOT).toLowerCase())) {
     throw rehearsalRootError("production_runtime_root_forbidden");
   }
@@ -34,11 +36,15 @@ function requireScratchRoot(scratchRoot) {
 }
 
 export async function runActivationRehearsal({ scratchRoot, environment = process.env, now = new Date() } = {}) {
-  const root = requireScratchRoot(scratchRoot);
+  const root = requireScratchRoot(scratchRoot, environment.NINEROUTER_TEST_SCRATCH_ROOT ?? scratchBase);
   const scratchRuntimeRoot = win32.join(root, "runtime");
   await mkdir(scratchRuntimeRoot, { recursive: true });
   const gitInfo = await collectGitProvenance({ cwd: win32.join(sourceDirectory, "..") });
-  const manifest = await buildRelease({ sourceDirectory, lockPath, gitInfo, now });
+  const manifest = await buildRelease({ sourceDirectory, lockPath, gitInfo, runtimeIdentity: {
+    node: { path: process.execPath, version: process.version },
+    router: REHEARSAL_ROUTER,
+    model: environment.NINEROUTER_GEMINI_MODEL ?? "rehearsal-model",
+  }, now });
   await verifyRelease(manifest, { sourceDirectory, lockPath });
   const identity = createScopedIdentity({
     companionSha256: manifest.companionSha256,
@@ -78,7 +84,7 @@ export async function runActivationRehearsal({ scratchRoot, environment = proces
 }
 
 function usage() {
-  return "Usage: node src/rehearsal-cli.js <absolute-scratch-root-under-C:\\tmp\\ZCodeScratch>";
+  return "Usage: node src/rehearsal-cli.js <task-directory-under-NINEROUTER_TEST_SCRATCH_ROOT-or-C:\\tmp\\CodexScratch>";
 }
 
 export async function main(args = process.argv.slice(2)) {

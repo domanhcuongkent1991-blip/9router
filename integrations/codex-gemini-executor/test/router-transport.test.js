@@ -1,7 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { assertPublicRouterEndpoint, validatePublicRouterUrl } from "../src/router-transport.js";
+import { assertPublicRouterEndpoint, validatePublicRouterUrl, validateConfiguredRouterUrl, assertConfiguredRouterEndpoint } from "../src/router-transport.js";
+
+test("configured endpoint allows only the exact local 9Router origin", () => {
+  assert.equal(validateConfiguredRouterUrl("http://127.0.0.1:20128/"), "http://127.0.0.1:20128");
+  assert.doesNotThrow(() => assertConfiguredRouterEndpoint("http://127.0.0.1:20128/v1/responses"));
+  for (const url of ["http://localhost:20128", "http://127.0.0.1:20129", "http://127.1:20128",
+    "http://2130706433:20128", "http://[::1]:20128", "http://user:pass@127.0.0.1:20128",
+    "http://127.0.0.1:20128?x=1", "http://10.0.0.1:20128"]) {
+    assert.throws(() => validateConfiguredRouterUrl(url), { code: "router_transport_rejected" });
+  }
+  assert.throws(() => assertConfiguredRouterEndpoint("http://127.0.0.1:20128/other"));
+});
 
 function rejectsTransport(value) {
   return assert.throws(() => validatePublicRouterUrl(value), { code: "router_transport_rejected" });

@@ -28,6 +28,7 @@ async function sha256File(path) {
 async function collectSourceFiles(directory, relative = "", files = []) {
   const entries = await readdir(join(directory, relative), { withFileTypes: true });
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name, "en"))) {
+    if (entry.name === ".mimosa" && entry.isDirectory() && !entry.isSymbolicLink()) continue;
     const child = join(relative, entry.name);
     if (entry.isSymbolicLink()) reject("release_manifest_invalid", "source_link_not_allowed");
     if (entry.isDirectory()) await collectSourceFiles(directory, child, files);
@@ -38,7 +39,7 @@ async function collectSourceFiles(directory, relative = "", files = []) {
 
 // The manifest hash covers deterministic content only; createdAt is recorded
 // but excluded so rebuilding the same tree always yields the same releaseId.
-export async function buildRelease({ sourceDirectory, lockPath, gitInfo = {}, now = new Date() } = {}) {
+export async function buildRelease({ sourceDirectory, lockPath, gitInfo = {}, runtimeIdentity = null, now = new Date() } = {}) {
   if (typeof sourceDirectory !== "string" || typeof lockPath !== "string") {
     reject("release_manifest_invalid", "release_inputs_invalid");
   }
@@ -55,6 +56,7 @@ export async function buildRelease({ sourceDirectory, lockPath, gitInfo = {}, no
       uncommittedFileCount: gitInfo.uncommittedFileCount ?? null,
       nodeVersion: gitInfo.nodeVersion ?? process.version,
     },
+    ...(runtimeIdentity === null ? {} : { runtimeIdentity: structuredClone(runtimeIdentity) }),
     sourceManifest,
     dependencyLockSha256: await sha256File(lockPath),
     companionSha256: await sourceDigest(sourceDirectory),
@@ -76,7 +78,7 @@ export async function verifyRelease(manifest, { sourceDirectory, lockPath } = {}
     || manifest.releaseId !== manifest.manifestSha256.slice(0, 12)) {
     reject("release_manifest_invalid", "release_shape_invalid");
   }
-  const rebuilt = await buildRelease({ sourceDirectory, lockPath, gitInfo: manifest.provenance ?? {} });
+  const rebuilt = await buildRelease({ sourceDirectory, lockPath, gitInfo: manifest.provenance ?? {}, runtimeIdentity: manifest.runtimeIdentity ?? null });
   const sameManifestList = JSON.stringify(rebuilt.sourceManifest) === JSON.stringify(manifest.sourceManifest ?? null);
   if (!sameManifestList) reject("release_manifest_mismatch", "source_tree_drift");
   if (rebuilt.dependencyLockSha256 !== manifest.dependencyLockSha256) {

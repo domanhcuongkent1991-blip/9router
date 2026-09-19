@@ -16,7 +16,8 @@ import {
   readScopedRouterIdentity,
   sourceDigest,
 } from "./scoped-qualification.js";
-import { buildRelease, collectGitProvenance } from "./release.js";
+import { verifyRelease } from "./release.js";
+import { isDeepStrictEqual } from "node:util";
 
 
 export async function promoteScopedQualification({ identity, evidence, runtimeRoot, buildRelease,
@@ -74,6 +75,9 @@ export async function main(args = process.argv.slice(2)) {
       dependencyLockSha256: createHash("sha256").update(await readFile(win32.join(sourceDirectory, "..", "package-lock.json"))).digest("hex"),
       router: await readScopedRouterIdentity({ baseUrl: config.routerBaseUrl }),
       model: config.fixedModel,
+      allowedModels: config.allowedModels,
+      routerBaseUrl: config.routerBaseUrl,
+      sourceDirectory,
     });
     if (args[0] === "observe") {
       process.stdout.write(JSON.stringify({ schemaVersion: 2, identity, approvedAt: null,
@@ -109,11 +113,12 @@ export async function main(args = process.argv.slice(2)) {
       if (Buffer.byteLength(raw) > 16384) throw new Error("Evidence too large");
       const evidence = JSON.parse(raw);
       const fingerprint = await promoteScopedQualification({ identity, evidence, runtimeRoot,
-        buildRelease: async () => buildRelease({
-          sourceDirectory,
-          lockPath: win32.join(sourceDirectory, "..", "package-lock.json"),
-          gitInfo: await collectGitProvenance({ cwd: win32.join(sourceDirectory, "..") }),
-        }),
+        buildRelease: async () => {
+          const manifest = JSON.parse(await readFile(win32.join(sourceDirectory, "..", "release-manifest.json"), "utf8"));
+          await verifyRelease(manifest, { sourceDirectory, lockPath: win32.join(sourceDirectory, "..", "package-lock.json") });
+          if (!isDeepStrictEqual(manifest.runtimeIdentity, identity)) throw new ScopedQualificationError("release_manifest_mismatch");
+          return manifest;
+        },
       });
       process.stdout.write(JSON.stringify({ status: "qualified", fingerprint }) + "\n");
     } finally { await owner.release(); }
