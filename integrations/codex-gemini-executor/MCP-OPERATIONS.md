@@ -106,6 +106,29 @@ preview/validation writer đúng layout qua App Server authority trước batch 
 chỉ ghi đúng entry, có checkpoint và rollback, Desktop đã thoát. Không sửa
 `config.toml` bằng tay. Chỉ restart sau khi trạng thái MCP thực sự thay đổi.
 
+### Chuyển registration sang bootstrap candidate
+
+`scripts/Set-NineRouterBootstrapSafe.ps1` là writer cho layout candidate hiện tại.
+Lệnh preview tạo transaction riêng dưới `Codex` checkpoints, ghi proposal private,
+kiểm tra hash candidate và dùng App Server authority với `CODEX_HOME` cô lập. Nó
+không sửa config:
+
+```powershell
+$candidate = 'C:\Users\Admin\Documents\Codex\9router-gemini-runtime\candidates\<candidate-id>'
+pwsh -NoProfile -File .\scripts\Set-NineRouterBootstrapSafe.ps1 -CandidatePath $candidate
+```
+
+Chỉ dùng `-Apply` với `-PlanPath`, `-ExpectedPlanSha256` và
+`-ExpectedConfigSha256` lấy từ chính preview. Writer chờ Desktop thoát, kiểm tra
+App Server, owner lock, job state và router health ngay trước khi ghi. Khi Desktop
+đang mở có thể chạy helper ẩn với `-WaitForDesktopExitSeconds 900`; nếu hết thời
+gian, trạng thái là `HOLD` và không retry. Checkpoint `config.toml.before` được giữ
+trong transaction. Post-write validation lỗi sẽ rollback một lần; nếu phát hiện
+writer khác đã sửa file thì rollback bị từ chối và transaction phải được điều tra
+thủ công. Không xóa job `running` cũ hoặc execution lock khi chưa xác minh process
+owner. Bootstrap candidate chỉ cho fixed read-only marker task; chưa phải general
+qualification và chưa phải Ready for use.
+
 General qualification giữ `desktopGrantAccept` và `desktopGrantDeclineCancel` chưa
 đạt cho đến khi có evidence của host thật. `session_id` resume không được hỗ trợ
 ở scoped backend; status sau restart là đọc kết quả đã lưu, không phải resume task.
