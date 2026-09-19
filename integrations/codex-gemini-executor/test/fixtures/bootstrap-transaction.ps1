@@ -44,4 +44,40 @@ function Run-Fixture([string]$Case) {
     }
 }
 foreach ($case in @('success', 'rollback', 'concurrent-before', 'concurrent-after', 'desktop-open', 'proposal-drift', 'checkpoint-exists')) { Run-Fixture $case; $passed++ }
+
+# Progress must remain readable across replacement and contain no config content.
+$progress = Join-Path $fixture 'progress.json'
+Write-BootstrapProgress $progress 'waiting_for_desktop_exit'
+Write-BootstrapProgress $progress 'finished'
+Assert-Equal (([IO.File]::ReadAllText($progress) | ConvertFrom-Json).phase) 'finished'
+$passed++
+
+# Exercise the real orchestration error path on fixtures: preexisting external
+# drift must not be attributed to the writer, and the attempt stays durable.
+$attempt = Join-Path $fixture 'blocked-attempt'
+[IO.Directory]::CreateDirectory($attempt) | Out-Null
+$ConfigPath = Join-Path $attempt 'config.toml'
+[IO.File]::WriteAllText($ConfigPath, 'before')
+$ExpectedConfigSha256 = Get-ConfigHash $ConfigPath
+$PlanPath = Join-Path $attempt 'plan.json'
+$planFixture = @{ configPath = $ConfigPath; beforeSha256 = $ExpectedConfigSha256; afterSha256 = ('a' * 64) }
+[IO.File]::WriteAllText($PlanPath, ($planFixture | ConvertTo-Json))
+$ExpectedPlanSha256 = Get-ConfigHash $PlanPath
+[IO.File]::WriteAllText($ConfigPath, 'external-edit')
+$Apply = $true
+$WhatIfPreference = $false
+function Assert-DesktopClosed { throw 'desktop_still_running' }
+try { $null = Invoke-BootstrapSwitch; throw 'hold_not_reported' }
+catch { Assert-Equal $_.Exception.Message 'bootstrap_switch_hold_see_result' }
+$report = [IO.File]::ReadAllText((Join-Path $attempt 'apply-result.json')) | ConvertFrom-Json
+Assert-Equal $report.configChanged $false
+Assert-Equal $report.configDiffersFromPreview $true
+Assert-Equal $report.error 'desktop_still_running'
+Assert-Equal (Test-Path (Join-Path $attempt 'apply-started.json')) $true
+Assert-Equal ([IO.File]::ReadAllText($ConfigPath)) 'external-edit'
+$passed++
+
+try { $null = Invoke-BootstrapSwitch; throw 'duplicate_attempt_accepted' }
+catch { Assert-Equal $_.Exception.Message 'transaction_already_attempted' }
+$passed++
 @{ passed = $passed; failed = 0 } | ConvertTo-Json -Compress

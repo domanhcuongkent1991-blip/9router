@@ -29,6 +29,20 @@ function Write-NewBytes([string]$Path, [byte[]]$Bytes) {
     finally { $stream.Dispose() }
 }
 
+function Write-BootstrapProgress([string]$Path, [string]$Phase) {
+    $value = @{ phase = $Phase; pid = $PID; updatedAt = [DateTime]::UtcNow.ToString('o'); readiness = 'HOLD' }
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($value | ConvertTo-Json))
+    $temporary = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    Write-NewBytes $temporary $bytes
+    if (Test-Path -LiteralPath $Path) {
+        $backup = $Path + '.previous'
+        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
+        [IO.File]::Replace($temporary, $Path, $backup, $true)
+        Remove-Item -LiteralPath $backup -Force
+    }
+    else { [IO.File]::Move($temporary, $Path) }
+}
+
 function Test-CodexDesktopOpen {
     # Codex Desktop currently uses ChatGPT.exe, not the CLI's codex.exe.
     $processes = @(Get-Process -Name ChatGPT, Codex -ErrorAction SilentlyContinue)
@@ -149,10 +163,17 @@ function Invoke-BootstrapSwitch {
     if ($plan.beforeSha256 -ne $ExpectedConfigSha256 -or $plan.configPath -ne $ConfigPath) { throw 'plan_target_mismatch' }
     $transaction = Split-Path -Parent $PlanPath
     $resultPath = Join-Path $transaction 'apply-result.json'
-    if (Test-Path -LiteralPath $resultPath) { throw 'transaction_already_attempted' }
-    $report = [ordered]@{ status = 'HOLD'; readiness = 'HOLD'; configChanged = $false; checkpoint = $null }
+    $startedPath = Join-Path $transaction 'apply-started.json'
+    $progressPath = Join-Path $transaction 'apply-progress.json'
+    if ((Test-Path -LiteralPath $resultPath) -or (Test-Path -LiteralPath $startedPath)) { throw 'transaction_already_attempted' }
+    # CreateNew claims this attempt before waiting. A killed process leaves durable
+    # evidence; it must not be mistaken for a helper that is still waiting.
+    Write-NewBytes $startedPath ([Text.UTF8Encoding]::new($false).GetBytes((@{ pid = $PID; startedAt = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json)))
+    $report = [ordered]@{ status = 'HOLD'; readiness = 'HOLD'; configChanged = $false; configDiffersFromPreview = $false; checkpoint = $null }
     try {
+        Write-BootstrapProgress $progressPath 'checking_desktop'
         if ($WaitForDesktopExitSeconds -gt 0) {
+            Write-BootstrapProgress $progressPath 'waiting_for_desktop_exit'
             $deadline = [DateTime]::UtcNow.AddSeconds($WaitForDesktopExitSeconds)
             while (Test-CodexDesktopOpen) {
                 if ([DateTime]::UtcNow -ge $deadline) { throw 'desktop_exit_wait_expired' }
@@ -161,6 +182,7 @@ function Invoke-BootstrapSwitch {
             Start-Sleep -Seconds 2
         }
         Assert-DesktopClosed
+        Write-BootstrapProgress $progressPath 'verifying_candidate'
         if ((Get-ConfigHash $PlanPath) -ne $ExpectedPlanSha256) { throw 'plan_changed' }
         if ((Get-ConfigHash $ConfigPath) -ne $ExpectedConfigSha256) { throw 'config_concurrent_edit' }
         Assert-NoExecutorProcesses
@@ -172,23 +194,36 @@ function Invoke-BootstrapSwitch {
         $checkpoint = Join-Path $transaction 'config.toml.before'
         $report.checkpoint = $checkpoint
         $validate = { param($path) $null = Invoke-Planner @('--validate', $path, $PlanPath); return $true }
+        Write-BootstrapProgress $progressPath 'applying_config'
         $report.status = Invoke-ConfigTransaction -Target $ConfigPath -Proposal $plan.proposalPath -Checkpoint $checkpoint -BeforeSha256 $plan.beforeSha256 -AfterSha256 $plan.afterSha256 -Guard { Assert-NoExecutorProcesses } -Validate $validate
         $report.configChanged = $true
+        $report.configDiffersFromPreview = $true
         $report['releaseId'] = $plan.releaseId
         $report['configSha256'] = Get-ConfigHash $ConfigPath
     }
     catch {
         $code = $_.Exception.Message
         $report['error'] = if ($code -match '^[a-z_]{3,80}$') { $code } else { 'bootstrap_switch_failed' }
-        # Do not claim unchanged if rollback refused because another writer intervened.
-        $report.configChanged = (Get-ConfigHash $ConfigPath) -ne $ExpectedConfigSha256
+        # External drift before this transaction is not a change made by this writer.
+        $observed = Get-ConfigHash $ConfigPath
+        $report.configDiffersFromPreview = $observed -ne $ExpectedConfigSha256
+        $report.configChanged = if ($null -eq $report.checkpoint -or -not (Test-Path -LiteralPath ($report.checkpoint + '.displaced'))) { $false }
+            elseif ($observed -eq $plan.afterSha256) { $true }
+            elseif ($observed -eq $ExpectedConfigSha256) { $false }
+            else { $null }
     }
     Write-NewBytes $resultPath ([Text.UTF8Encoding]::new($false).GetBytes(($report | ConvertTo-Json -Depth 5)))
+    Write-BootstrapProgress $progressPath 'finished'
     $report | ConvertTo-Json -Depth 5
     if ($report.status -ne 'APPLIED_BOOTSTRAP_ONLY') { throw 'bootstrap_switch_hold_see_result' }
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
     try { Invoke-BootstrapSwitch }
-    catch { Write-Output 'Bootstrap switch HOLD; inspect the redacted transaction result. No retry is performed.'; exit 1 }
+    catch {
+        $code = $_.Exception.Message
+        if ($code -notmatch '^[a-z_]{3,80}$') { $code = 'bootstrap_switch_failed' }
+        [ordered]@{ status = 'HOLD'; error = $code } | ConvertTo-Json -Compress
+        exit 1
+    }
 }

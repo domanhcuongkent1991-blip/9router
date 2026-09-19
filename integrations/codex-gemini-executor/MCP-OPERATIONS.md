@@ -120,10 +120,27 @@ pwsh -NoProfile -File .\scripts\Set-NineRouterBootstrapSafe.ps1 -CandidatePath $
 
 Chỉ dùng `-Apply` với `-PlanPath`, `-ExpectedPlanSha256` và
 `-ExpectedConfigSha256` lấy từ chính preview. Writer chờ Desktop thoát, kiểm tra
-App Server, owner lock, job state và router health ngay trước khi ghi. Khi Desktop
-đang mở có thể chạy helper ẩn với `-WaitForDesktopExitSeconds 900`; nếu hết thời
-gian, trạng thái là `HOLD` và không retry. Checkpoint `config.toml.before` được giữ
-trong transaction. Post-write validation lỗi sẽ rollback một lần; nếu phát hiện
+App Server, owner lock, job state và router health ngay trước khi ghi. Chạy từ một
+cửa sổ Windows PowerShell mở bên ngoài Desktop. Thoát Desktop hoàn toàn, rồi dùng
+wrapper dưới đây để tạo preview với hash sau khi thoát và áp dụng một lần:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\9Router\integrations\codex-gemini-executor\scripts\Complete-NineRouterBootstrap.ps1 -CandidatePath $candidate -Apply
+```
+
+Chỉ mở lại Desktop khi lệnh báo `APPLIED_BOOTSTRAP_ONLY`. Nếu `HOLD`, dừng tại
+transaction đó; không retry hoặc đổi endpoint/model/key. Helper được khởi chạy từ
+Codex có thể chết cùng Desktop; `Start-Process -WindowStyle Hidden` không chứng minh
+process tồn tại độc lập. Không dùng cách này để phối hợp shutdown. Tùy chọn chờ
+`-WaitForDesktopExitSeconds` chỉ dùng trong shell ngoài Desktop; không tự tạo lại
+preview nếu hash thay đổi trong lúc chờ.
+
+`apply-started.json` và `apply-progress.json` ghi thời điểm/PID/giai đoạn, không có
+config hay credential. Có started nhưng thiếu result và PID đã thoát là attempt
+bị gián đoạn, không phải đang chờ. `configChanged` mô tả ghi bởi writer;
+`configDiffersFromPreview` mô tả drift so với preview, có thể do writer bên ngoài.
+Checkpoint `config.toml.before` được giữ trong transaction. Post-write validation
+lỗi sẽ rollback một lần; nếu phát hiện
 writer khác đã sửa file thì rollback bị từ chối và transaction phải được điều tra
 thủ công. Không xóa job `running` cũ hoặc execution lock khi chưa xác minh process
 owner. Bootstrap candidate chỉ cho fixed read-only marker task; chưa phải general

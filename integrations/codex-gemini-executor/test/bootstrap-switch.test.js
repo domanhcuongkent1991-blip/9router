@@ -108,5 +108,13 @@ test("Windows atomic config transaction fixtures", async () => {
     { timeout: 30000, windowsHide: true });
   const report = JSON.parse(stdout);
   assert.equal(report.failed, 0);
-  assert.equal(report.passed, 7);
+  assert.equal(report.passed, 10);
+});
+test("external wrapper preserves arguments and stops on preview or apply failure", async () => {
+  const { stdout } = await promisify(execFile)("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", fileURLToPath(new URL("fixtures/bootstrap-external.ps1", import.meta.url))],
+    { timeout: 30000, windowsHide: true });
+  const report = JSON.parse(stdout);
+  assert.equal(report.failed, 0);
+  assert.equal(report.passed, 4);
 });
