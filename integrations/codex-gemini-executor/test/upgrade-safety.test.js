@@ -43,7 +43,7 @@ test("session metadata survives restart but cannot cross runtime or workspace", 
 
 test("router identity requires the explicit contract and never follows redirects", async () => {
   let options;
-  assert.deepEqual(await qualification.readRouterIdentity({ fetchJson: async (_url, value) => {
+  assert.deepEqual(await qualification.readRouterIdentity({ baseUrl: "https://router.example.test", fetchJson: async (_url, value) => {
     options = value;
     return new Response(JSON.stringify({ version: "0.5.65", buildId: "build_1", contractVersion: 1 }));
   } }), { version: "0.5.65", buildId: "build_1", contractVersion: 1 });

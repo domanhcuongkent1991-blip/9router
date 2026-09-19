@@ -31,10 +31,27 @@ test("registers exactly three bounded tools and rejects routing overrides", asyn
   const server = createGeminiMcpServer({ core, ServerClass: FakeServer });
   assert.deepEqual([...server.tools.keys()], ["run_gemini_task", "get_gemini_status", "cancel_gemini_task"]);
   const run = server.tools.get("run_gemini_task");
-  assert.equal(run.config.inputSchema.safeParse({ task: "x", workspace: "D:\\Repo", model: "gemini-fast" }).success, true);
+  assert.equal(run.config.inputSchema.safeParse({ task: "x", workspace: "D:\\Repo", model: "gemini-fast" }).success, false);
   assert.equal(run.config.inputSchema.safeParse({ task: "x", workspace: "D:\\Repo", model: "bad\nmodel" }).success, false);
   assert.equal(run.config.inputSchema.safeParse({ task: "x", workspace: "D:\\Repo", provider_url: "https://example.invalid" }).success, false);
   assert.equal(run.config.inputSchema.safeParse({ task: "x", workspace: "D:\\Repo" }).success, true);
+});
+
+test("exposes scope and write intent approval but rejects caller model overrides", () => {
+  const core = {
+    async runGeminiTask() {}, getGeminiStatus() {}, async cancelGeminiTask() {},
+    modelPolicy: Object.freeze({ defaultModel: "gemini-fixed" }),
+  };
+  const server = createGeminiMcpServer({ core, ServerClass: FakeServer });
+  const schema = server.tools.get("run_gemini_task").config.inputSchema;
+  const scoped = {
+    task: "edit source", workspace: "D:\\Repo", access: "workspace-write",
+    scope: { read: ["src"], write: ["src"], allow_create: true },
+  };
+  assert.equal(schema.safeParse(scoped).success, true);
+  assert.equal(schema.safeParse({ ...scoped, model: "caller-model" }).success, false);
+  assert.equal(schema.safeParse({ ...scoped, access: "scoped-edit" }).success, false);
+  assert.equal(schema.safeParse({ ...scoped, scope: { read: ["src"], write: "src" } }).success, false);
 });
 
 test("reports the job id early for a terminal run", async () => {
@@ -273,7 +290,7 @@ function modernContext({ requestState, inputResponses } = {}) {
   };
 }
 
-test("binds approval continuation to the resolved configured model", async () => {
+test("rejects caller model overrides before starting a continuation", async () => {
   const approval = approvalCore();
   approval.core.modelPolicy = Object.freeze({ defaultModel: "gemini-a", allowedModels: Object.freeze(["gemini-a", "gemini-b"]) });
   const server = createGeminiMcpServer({ core: approval.core, ServerClass: FakeServer, generateCorrelationId: () => "capability_model" });
@@ -435,6 +452,45 @@ test("correlates sequential approvals and fails closed on forged request reuse",
   }).context);
   assert.equal(rejected.structuredContent.status, "failed");
   assert.deepEqual(forgedApproval.decisions, ["cancel"]);
+});
+
+test("binds write-intent continuation to canonical scope and never exposes write text", async () => {
+  const approvals = [];
+  const decisions = [];
+  const core = {
+    modelPolicy: Object.freeze({ defaultModel: "gemini-fixed" }),
+    async runGeminiTask(_request, hooks) {
+      await hooks.onStarted("job_write_intent");
+      decisions.push(await hooks.requestDecision({
+        type: "write_intent", operation: "replace_text", path: "src\\auth.js",
+        expectedSha256: "a".repeat(64), operationFingerprint: "b".repeat(64),
+        old_text: "TOP SECRET OLD", new_text: "TOP SECRET NEW", text: "TOP SECRET TEXT", deadline: 123,
+      }));
+      return { jobId: "job_write_intent", status: "completed", finalAnswer: "done", filesChanged: [], tests: [] };
+    },
+    getGeminiStatus() {}, async cancelGeminiTask() { return { jobId: "job_write_intent", status: "cancelled" }; },
+  };
+  const server = createGeminiMcpServer({ core, ServerClass: FakeServer, generateCorrelationId: () => "scope_write_intent" });
+  const run = server.tools.get("run_gemini_task").handler;
+  const request = {
+    task: "edit", workspace: "D:\\Repo", access: "workspace-write",
+    scope: { read: ["src"], write: ["src"], allow_create: false },
+  };
+  const first = await run(request, modernContext().context);
+  const schemaFacts = JSON.parse(first.inputRequests.approval.params.requestedSchema.properties.commandActions.const);
+  approvals.push(first.inputRequests.approval.params.message, first.structuredContent);
+  assert.deepEqual(schemaFacts, {
+    type: "write_intent", operation: "replace_text", path: "src\\auth.js",
+    expectedSha256: "a".repeat(64), operationFingerprint: "b".repeat(64), deadline: 123, model: "gemini-fixed",
+  });
+  assert.equal(JSON.stringify(approvals).includes("TOP SECRET"), false);
+
+  const rejected = await run({ ...request, scope: { ...request.scope, allow_create: true } }, modernContext({
+    requestState: first.requestState,
+    inputResponses: { approval: { action: "accept", content: { decision: "accept" } } },
+  }).context);
+  assert.equal(rejected.structuredContent.status, "failed");
+  assert.deepEqual(decisions, ["cancel"]);
 });
 
 test("SDK 2.0 legacy shim performs elicitation and re-enters the same handler", async () => {

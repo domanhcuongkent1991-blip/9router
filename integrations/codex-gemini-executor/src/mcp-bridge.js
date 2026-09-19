@@ -23,6 +23,21 @@ import {
 const decisionSchema = z.enum(["accept", "decline", "cancel"]);
 const decisionObjectSchema = z.object({ decision: decisionSchema }).strict();
 const jobIdSchema = z.string().min(1).max(512);
+const scopePathSchema = z.string().min(1).max(4096);
+const publicScopeSchema = z.object({
+  read: z.array(scopePathSchema).min(1).max(32),
+  write: z.array(scopePathSchema).max(32),
+  allow_create: z.boolean().optional(),
+}).strict();
+const runInputSchema = z.object({
+  task: z.string().trim().min(1).max(65_536),
+  workspace: z.string().min(3).max(4096),
+  effort: z.enum(["low", "medium", "high"]).optional(),
+  access: z.enum(["read-only", "workspace-write"]).optional(),
+  scope: publicScopeSchema.optional(),
+  session_id: z.string().min(1).max(512).optional(),
+  timeout_minutes: z.number().int().min(1).max(120).optional(),
+}).strict();
 const statusSchema = z.enum(["starting", "running", "awaiting_approval", "completed", "failed", "cancelled"]);
 const errorSchema = z.object({
   category: z.enum(PUBLIC_ERROR_CATEGORIES),
@@ -49,17 +64,37 @@ const resultSchema = z.object({
   effort: z.enum(["low", "medium", "high"]).optional(),
   model: z.string().regex(/^[A-Za-z0-9._:/-]{1,256}$/u).optional(),
   compatibilityWarnings: z.array(z.object({ code: z.string().max(128) }).passthrough()).max(16).optional(),
-  approval: z.object({
-    type: z.enum(["command", "file_change"]),
-    jobId: jobIdSchema,
-    threadId: z.string().min(1).max(512),
-    turnId: z.string().min(1).max(512),
-    itemId: z.string().min(1).max(512),
-    command: z.string().max(65_536).nullable().optional(),
-    cwd: z.string().max(4096).nullable().optional(),
-    reason: z.string().max(16_384).nullable().optional(),
-    decisions: z.tuple([z.literal("accept"), z.literal("decline"), z.literal("cancel")]),
-  }).strict().optional(),
+  approval: z.union([
+    z.object({
+      type: z.enum(["command", "file_change"]),
+      jobId: jobIdSchema,
+      threadId: z.string().min(1).max(512),
+      turnId: z.string().min(1).max(512),
+      itemId: z.string().min(1).max(512),
+      command: z.string().max(65_536).nullable().optional(),
+      cwd: z.string().max(4096).nullable().optional(),
+      reason: z.string().max(16_384).nullable().optional(),
+      decisions: z.tuple([z.literal("accept"), z.literal("decline"), z.literal("cancel")]),
+    }).strict(),
+    z.object({
+      type: z.literal("job_scope"),
+      workspace: z.string().min(1).max(4096),
+      access: z.enum(["read-only", "workspace-write"]),
+      scope: publicScopeSchema,
+      deadline: z.number().finite().optional(),
+      model: z.string().regex(/^[A-Za-z0-9._:/-]{1,256}$/u).optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("write_intent"),
+      operation: z.enum(["replace_text", "create_text"]),
+      path: z.string().min(1).max(4096),
+      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+      allowCreate: z.literal(true).optional(),
+      operationFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+      deadline: z.number().finite().optional(),
+      model: z.string().regex(/^[A-Za-z0-9._:/-]{1,256}$/u).optional(),
+    }).strict(),
+  ]).optional(),
   error: errorSchema.optional(),
 }).strict();
 
@@ -81,25 +116,61 @@ function deferred() {
   return { promise, resolve };
 }
 
-function requestFingerprint(request, modelPolicy) {
-  const model = modelPolicy?.allowedModels?.includes(request.model ?? modelPolicy.defaultModel)
-    ? request.model ?? modelPolicy.defaultModel
-    : request.model ?? null;
+function canonicalScope(scope) {
+  if (scope === undefined) return null;
+  return {
+    read: [...scope.read].sort((left, right) => left.localeCompare(right, "en")),
+    write: [...scope.write].sort((left, right) => left.localeCompare(right, "en")),
+    allow_create: scope.allow_create ?? false,
+  };
+}
+
+function requestFingerprint(request) {
   return createHash("sha256").update(JSON.stringify([
     request.task,
     request.workspace,
     request.effort ?? "medium",
     request.access ?? "read-only",
-    model,
+    canonicalScope(request.scope),
     request.session_id ?? null,
     request.timeout_minutes ?? 30,
   ])).digest("hex");
 }
 
+function approvalForDisplay(approval, model) {
+  if (approval?.type === "write_intent") {
+    return {
+      type: "write_intent",
+      operation: approval.operation,
+      path: approval.path,
+      ...(approval.expectedSha256 === undefined ? {} : { expectedSha256: approval.expectedSha256 }),
+      ...(approval.allowCreate === true ? { allowCreate: true } : {}),
+      operationFingerprint: approval.operationFingerprint,
+      ...(approval.deadline === undefined ? {} : { deadline: approval.deadline }),
+      ...(typeof model === "string" ? { model } : {}),
+    };
+  }
+  if (approval?.type === "job_scope") {
+    return {
+      type: "job_scope",
+      workspace: approval.workspace,
+      access: approval.access,
+      scope: canonicalScope(approval.scope),
+      ...(approval.deadline === undefined ? {} : { deadline: approval.deadline }),
+      ...(typeof model === "string" ? { model } : {}),
+    };
+  }
+  return approval;
+}
+
 function approvalMessage(approval) {
-  const detail = approval.type === "file_change"
-    ? `File change requested. Reason: ${approval.reason ?? "not provided"}`
-    : `Command: ${approval.command ?? "not provided"}\nDirectory: ${approval.cwd ?? "not provided"}\nReason: ${approval.reason ?? "not provided"}`;
+  const detail = approval.type === "write_intent"
+    ? `Write intent: ${approval.operation}\nPath: ${approval.path}${approval.expectedSha256 ? `\nExpected SHA-256: ${approval.expectedSha256}` : ""}${approval.allowCreate ? "\nCreate allowed: true" : ""}${approval.deadline ? `\nDeadline: ${approval.deadline}` : ""}${approval.model ? `\nModel: ${approval.model}` : ""}`
+    : approval.type === "job_scope"
+      ? `Scoped job: ${approval.access}\nWorkspace: ${approval.workspace}${approval.deadline ? `\nDeadline: ${approval.deadline}` : ""}${approval.model ? `\nModel: ${approval.model}` : ""}`
+      : approval.type === "file_change"
+        ? `File change requested. Reason: ${approval.reason ?? "not provided"}`
+        : `Command: ${approval.command ?? "not provided"}\nDirectory: ${approval.cwd ?? "not provided"}\nReason: ${approval.reason ?? "not provided"}`;
   return Buffer.from(detail, "utf8").subarray(0, 16 * 1024).toString("utf8").replace(/�$/u, "");
 }
 
@@ -108,11 +179,13 @@ function approvalMessage(approval) {
 // instead of parsing the display message. Not required: legacy clients that
 // only answer {decision} stay valid.
 function commandApprovalSchema(approval) {
+  const facts = approval?.type === "write_intent" || approval?.type === "job_scope"
+    ? approval : approval?.commandActions ?? null;
   return {
     type: "object",
     properties: {
       decision: { type: "string", enum: ["accept", "decline", "cancel"] },
-      commandActions: { type: "string", const: JSON.stringify(approval?.commandActions ?? null) },
+      commandActions: { type: "string", const: JSON.stringify(facts) },
     },
     required: ["decision"],
     additionalProperties: false,
@@ -175,7 +248,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
 
   function startRun(request, context) {
     const pending = {
-      fingerprint: requestFingerprint(request, core.modelPolicy),
+      fingerprint: requestFingerprint(request),
       jobId: null,
       tokens: new Set(),
       currentApproval: null,
@@ -196,8 +269,9 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
         if (pending.cleaned || pending.currentApproval || ++pending.approvalCount > 256) {
           return Promise.reject(new Error("invalid_approval_sequence"));
         }
+        const display = approvalForDisplay(approval, core.modelPolicy?.defaultModel);
         const decision = deferred();
-        pending.currentApproval = { approval, decision };
+        pending.currentApproval = { approval: display, decision };
         pending.approvalReady.resolve();
         return decision.promise;
       },
@@ -243,7 +317,14 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
     return modes.length === 0 || (elicitation.form !== null && typeof elicitation.form === "object");
   }
 
-  async function continueRun(request, context) {
+  async function continueRun(rawRequest, context) {
+    const parsedRequest = runInputSchema.safeParse(rawRequest);
+    if (!parsedRequest.success) {
+      const state = stateFrom(context);
+      if (typeof state === "string" && pendingByToken.has(state)) return failPending(pendingByToken.get(state));
+      throw new Error("invalid_request");
+    }
+    const request = parsedRequest.data;
     const state = stateFrom(context);
     let pending;
     if (state === undefined) {
@@ -254,7 +335,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
       if (!pending) throw new Error("invalid_approval_correlation");
       pendingByToken.delete(state);
       pending.tokens.delete(state);
-      if (pending.fingerprint !== requestFingerprint(request, core.modelPolicy) || !pending.currentApproval) return failPending(pending);
+      if (pending.fingerprint !== requestFingerprint(request) || !pending.currentApproval) return failPending(pending);
 
       const response = inputResponse(context?.mcpReq?.inputResponses, "approval");
       let decision;
@@ -311,15 +392,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
   server.registerTool("run_gemini_task", {
     title: "Run Gemini task",
     description: "Run a bounded Gemini-backed Codex task in an approved workspace.",
-    inputSchema: z.object({
-      task: z.string().trim().min(1).max(65_536),
-      workspace: z.string().min(3).max(4096),
-      effort: z.enum(["low", "medium", "high"]).optional(),
-      access: z.enum(["read-only", "workspace-write"]).optional(),
-      model: z.string().regex(/^[A-Za-z0-9._:/-]{1,256}$/u).optional(),
-      session_id: z.string().min(1).max(512).optional(),
-      timeout_minutes: z.number().int().min(1).max(120).optional(),
-    }).strict(),
+    inputSchema: runInputSchema,
     outputSchema: resultSchema,
   }, continueRun);
 
