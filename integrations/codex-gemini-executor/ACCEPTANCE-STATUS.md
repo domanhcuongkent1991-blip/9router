@@ -68,8 +68,48 @@ Release: `03b8dcf1a4a5`; source digest:
   `job_2b05c04a-4456-4257-8440-c05834a6efcf`, returning `21 bytes`,
   `filesChanged=[]`, `recoveryRequired=false`, and the canonical model. A
   workspace-write probe against the active bootstrap registration returned a
-  sanitized `protocol_error` before any file change; this is retained as failed
-  approval-gate evidence and does not qualify workspace-write or approval UI.
+  sanitized `protocol_error`. Subsequent read-only request-validation diagnosis
+  found the fixture lacked `canary-input.txt`: `scope_denied/path_unavailable`
+  was flattened to the public `protocol_error`. It failed before qualification,
+  model dispatch or approval. This is NOT evidence of a Desktop elicitation defect.
+- A separate fixture-only `scoped-canary-cli` accept attempt on 2026-09-20
+  returned the bounded `protocol_error` result and wrote no qualification record.
+  Its scope required `canary-output`, which had not been prepared; offline
+  validation reproduced `scope_denied/path_unavailable`. It did not test approval
+  or model execution and does not replace the earlier scripted live-canary report.
+  The pure qualification check also rejects `bootstrap-evidence.json` with
+  `scoped_combination_not_qualified`, so no general record was created.
+- A fixture-only Desktop approval harness now imports the unchanged immutable
+  candidate core, broker and MCP bridge. It accepts only four exact requests
+  (accept, decline, cancel, timeout), confines each to one prepared marker file,
+  verifies the exact write hash/text fingerprint before asking for approval,
+  and refuses replay or advancing after a failed scenario. It never writes a
+  general qualification record. Candidate release/source/lock/dependency bytes,
+  router identity, Node and App Server authority hash are checked again.
+- Harness artifact:
+  `C:\Users\Admin\Documents\Codex\9router-gemini-runtime\approval-canaries\8804bed8-db89-4358-ac55-7c89afdad552`.
+  `scripted-protocol.json` passes all four scenarios on protocol `2025-11-25`;
+  each requested one approval. Cleanup, terminal cancel, persisted status in a
+  fresh companion and file hashes passed. The timeout used the real one-minute
+  job deadline and rejected a late continuation. `recovery.result.json` passes
+  wrong-hash refusal, backup restore and journal verification on the scripted
+  fixture only. `desktopAcceptance` remains **false**.
+- Two earlier harness attempts are retained under `approval-canaries` for
+  diagnosis: `8a10ef15-*` used an incorrectly negotiated test client;
+  `5c394386-*` passed all core scenarios but the client did not handle the expected
+  stale-continuation rejection after timeout. Neither report is a passing gate.
+- Working-tree offline suite with harness tests: **365/365**, no skips; log:
+  `C:\tmp\CodexScratch\2026-09-20-mcp-stability\approval-harness-verified-offline.log`. The
+  immutable candidate's previous **347/347** is a separate suite. Focused
+  Gitleaks passed for harness scripts/tests; OSV coverage remains limited.
+- Corrected source writer `scripts/Set-DesktopApprovalCanarySafe.ps1` preview
+  passed App Server validation in checkpoint transaction
+  `nine-router-approval-d0c41cb314d54e748659b3e029f74400`. It appends an optional
+  `nine-router-gemini-approval-canary` registration and leaves the existing MCP
+  entry byte-for-byte intact. The preview supplies the relative model catalog
+  in its private profile and reads native stdout/stderr separately. Apply has
+  **not** run. Use the corrected source writer, not the earlier copy bundled
+  under the harness artifact. See MCP-OPERATIONS.md for the exact external command.
 - Fixed two real wire defects: recovery fields missing from the strict MCP
   output schema and internal `scoped-edit` leaking into public MCP output.
 - Qualification policy v2 binds release location, endpoint, provider and model

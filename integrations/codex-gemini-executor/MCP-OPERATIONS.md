@@ -150,6 +150,61 @@ General qualification giữ `desktopGrantAccept` và `desktopGrantDeclineCancel`
 đạt cho đến khi có evidence của host thật. `session_id` resume không được hỗ trợ
 ở scoped backend; status sau restart là đọc kết quả đã lưu, không phải resume task.
 
+### Approval canary cho Desktop (2026-09-20)
+
+Hai lỗi `protocol_error` trước đây do fixture chưa chuẩn bị đủ, không phải bằng
+chứng lỗi UI: task Desktop thiếu `canary-input.txt`, scoped CLI thiếu thư mục
+`canary-output`. Kiểm tra scope bằng `validateGeminiRequest` trước mọi model call.
+Nếu validation fail, dừng và sửa fixture; không suy ra nguyên nhân từ category
+`protocol_error` đã rút gọn. Bootstrap chỉ cho read-only nên không thể dùng nó
+để kiểm tra workspace-write bằng cách đổi payload.
+
+Harness riêng đã được tạo, cùng release `03b8dcf1a4a5`, không đổi source candidate.
+Nó chỉ cho bốn request cố định trong `requests.json`, mỗi ca một lần và một file
+marker; chặn model/provider override, scope mở rộng, nội dung ghi khác và replay.
+Scripted protocol accept/decline/cancel/timeout và fixture recovery đã pass, nhưng
+không thay thế quyết định UI. `desktopAcceptance` vẫn false. Production MCP vẫn
+chỉ bootstrap; không tạo qualification trước khi có đầy đủ bằng chứng Desktop.
+
+Để thêm canary optional, mở **Windows PowerShell ngoài Codex**, thoát Desktop,
+rồi chạy đúng source writer đã sửa (không dùng bản writer cũ trong artifact):
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\9Router\integrations\codex-gemini-executor\scripts\Set-DesktopApprovalCanarySafe.ps1 -DescriptorPath C:\Users\Admin\Documents\Codex\9router-gemini-runtime\approval-canaries\8804bed8-db89-4358-ac55-7c89afdad552\canary.json -Apply
+```
+
+Writer kiểm tra identity, artifact hashes, fixture chưa dùng, runtime idle và
+scripted report trước khi ghi. Nó tạo checkpoint và preview mới sau khi Desktop
+đã đóng, validate bằng App Server authority, atomic replace với hash guard và
+rollback nếu validation fail. Chỉ khi báo `APPLIED_FIXTURE_CANARY_ONLY` mới mở
+Desktop một lần. Nếu `HOLD`, giữ transaction và chẩn đoán; không retry mù.
+Không áp dụng config khi Desktop đang chạy và không cần restart chỉ để preview.
+
+Sau restart, trong task mới hoặc lượt mới đã có tool canary, gọi đúng request
+trong file sau theo thứ tự accept, decline, cancel, timeout:
+
+`C:\Users\Admin\Documents\Codex\9router-gemini-runtime\approval-canaries\8804bed8-db89-4358-ac55-7c89afdad552\requests.json`.
+
+- Accept: người dùng chấp nhận đúng marker replacement; xác minh file/hash/backup.
+- Decline: người dùng từ chối; file giữ nguyên và job `approval_required`.
+- Cancel: người dùng hủy; file giữ nguyên và job `cancelled`.
+- Timeout: không phản hồi trong deadline một phút; có thể đóng prompt muộn bằng
+  Cancel. Job phải timeout, file giữ nguyên, cleanup đã xác nhận và continuation
+  muộn không được thực thi. Tool call có thể báo lỗi continuation; đọc status của
+  job để xác định timeout, không suy ra task mới đã chạy.
+
+Kết quả nằm trong `desktop-evidence`, tách với `scripted-evidence`. Người kiểm tra
+phải ghi lại host Desktop version/hash, tool discovery và thao tác UI quan sát
+được trước khi xác nhận desktop checks. Không tự chuyển `desktopAcceptance=true`
+từ việc nhìn thấy report. Sau đó mới tổng hợp evidence và gọi qualification CLI
+promote với evidence đầy đủ; không dùng bootstrap record làm đầu vào promote.
+
+Nếu preview CLI báo `failed to load configuration / os error 2`, kiểm tra file
+model catalog tương đối trong `CODEX_HOME` cô lập. Writer hiện sao chép đúng file
+catalog đó vào preview private và không thay đổi root setting ở config thật.
+Nếu dùng Windows PowerShell 5.1, tách native stdout/stderr để cảnh báo CLI không
+bị diễn giải thành lỗi dừng; không in toàn bộ output JSON chứa environment.
+
 ## Chẩn đoán nhanh
 
 ### Shell báo không có MCP nhưng Desktop vẫn gọi được
@@ -198,7 +253,7 @@ chạy và authority riêng biệt; không mặc định hai bản luôn giống
 | `dispatch_failed` | Kiểm tra process identity, database write access và router health trước wire format. |
 | `input_required` timeout | Kiểm tra Desktop approval/elicitation flow; không đổi model/key/endpoint để retry. |
 | `router_identity_mismatch` hoặc connection refused tại `127.0.0.1:20128` | Kiểm tra listener và process owner trước; nếu port trống, khởi động đúng standalone build đã được ghi trong candidate bằng launcher hiện có, chờ `/api/health` và `/api/compatibility`, rồi chạy lại preflight. Không tạo instance thứ hai hoặc đổi endpoint. |
-| Workspace-write trả `protocol_error` trước khi có approval | Giữ request failed và kiểm tra capability/elicitation của Desktop host; đây chưa phải approval accept và không tạo qualification. Không đổi model/key/endpoint hoặc hạ policy để vượt qua. |
+| Workspace-write trả `protocol_error` trước khi có approval | Kiểm tra fixture và chạy validation scope offline trước: `scope_denied/path_unavailable` hiện có thể bị rút gọn thành `protocol_error`. Chỉ điều tra elicitation sau khi đã chứng minh request tới approval. Không đổi model/key/endpoint hoặc hạ policy. |
 | `EPERM` tại scratch root | Chạy `npm run test:preflight`, sửa ACL hoặc truyền root test đã được operator kiểm tra. |
 | HTTP 429 không có layer metadata | Giữ `unknown/router`; không tự kết luận provider quota hoặc chuyển model. |
 | Job core completed nhưng tools/call lỗi schema | Kiểm tra output schema MCP, đặc biệt recovery metadata và ánh xạ scoped-edit sang workspace-write. Không gọi model lại trước khi tái hiện offline. |
