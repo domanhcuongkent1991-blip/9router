@@ -197,6 +197,8 @@ chạy và authority riêng biệt; không mặc định hai bản luôn giống
 | `app_server_incompatible` | Kiểm tra schema/handshake và đúng App Server executable. |
 | `dispatch_failed` | Kiểm tra process identity, database write access và router health trước wire format. |
 | `input_required` timeout | Kiểm tra Desktop approval/elicitation flow; không đổi model/key/endpoint để retry. |
+| `router_identity_mismatch` hoặc connection refused tại `127.0.0.1:20128` | Kiểm tra listener và process owner trước; nếu port trống, khởi động đúng standalone build đã được ghi trong candidate bằng launcher hiện có, chờ `/api/health` và `/api/compatibility`, rồi chạy lại preflight. Không tạo instance thứ hai hoặc đổi endpoint. |
+| Workspace-write trả `protocol_error` trước khi có approval | Giữ request failed và kiểm tra capability/elicitation của Desktop host; đây chưa phải approval accept và không tạo qualification. Không đổi model/key/endpoint hoặc hạ policy để vượt qua. |
 | `EPERM` tại scratch root | Chạy `npm run test:preflight`, sửa ACL hoặc truyền root test đã được operator kiểm tra. |
 | HTTP 429 không có layer metadata | Giữ `unknown/router`; không tự kết luận provider quota hoặc chuyển model. |
 | Job core completed nhưng tools/call lỗi schema | Kiểm tra output schema MCP, đặc biệt recovery metadata và ánh xạ scoped-edit sang workspace-write. Không gọi model lại trước khi tái hiện offline. |

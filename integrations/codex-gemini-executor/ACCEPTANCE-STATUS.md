@@ -4,7 +4,7 @@ This is the current consolidation of the chronological evidence in
 UPGRADE-SAFETY.md. This document is not a qualified-combination.json record and
 must not be used to promote a runtime automatically.
 
-## Current candidate status (2026-09-19)
+## Current candidate status (2026-09-20)
 
 **Desktop bootstrap canary PASS; general qualification and Ready for use remain HOLD.**
 Provider/model remain `nine_router` / `ag/gemini-3.8-flash`.
@@ -53,6 +53,23 @@ Release: `03b8dcf1a4a5`; source digest:
   scratch, router and release identity checks; it correctly remains HOLD with
   `qualification_record_missing` and `qualification_stale` because the general
   scoped-combination record is absent.
+- Requalification checks on 2026-09-20 used the dedicated scratch root
+  `C:\tmp\CodexScratch\2026-09-20-mcp-stability`; create/delete probe passed and
+  the candidate offline suite remained **347/347**. Project-local Gitleaks passed
+  on the immutable candidate package. OSV coverage remains limited because the
+  repository does not contain the pinned `osv-scanner.exe`.
+- The configured router had stopped before the recheck; no listener owned port
+  `20128`. The exact `D:\9Router\.next\standalone\custom-server.js` build was
+  started with the existing local data root, and `/api/health` plus
+  `/api/compatibility` returned the expected router identity. Preflight then
+  passed endpoint, scratch, credential-presence, router and release checks; only
+  `qualification_record_missing` and `qualification_stale` remained.
+- A new Desktop fixed read-only canary completed as job
+  `job_2b05c04a-4456-4257-8440-c05834a6efcf`, returning `21 bytes`,
+  `filesChanged=[]`, `recoveryRequired=false`, and the canonical model. A
+  workspace-write probe against the active bootstrap registration returned a
+  sanitized `protocol_error` before any file change; this is retained as failed
+  approval-gate evidence and does not qualify workspace-write or approval UI.
 - Fixed two real wire defects: recovery fields missing from the strict MCP
   output schema and internal `scoped-edit` leaking into public MCP output.
 - Qualification policy v2 binds release location, endpoint, provider and model
