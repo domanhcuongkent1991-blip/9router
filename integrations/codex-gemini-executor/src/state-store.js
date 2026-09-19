@@ -5,6 +5,10 @@ const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const STATUSES = new Set(["starting", "running", "awaiting_approval", ...TERMINAL]);
 const MAX_STATE_BYTES = 64 * 1024;
 const SAFE_JOB_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+const MAX_FILES_CHANGED = 1_024;
+const RECOVERY_SOURCES = new Set(["journal", "cleanup", "unknown"]);
+const SAFE_OPERATION_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+const MAX_RECOVERY_OPERATION_IDS = 16;
 
 export class JobStateError extends Error {
   constructor(code, reason) {
@@ -29,6 +33,28 @@ function minimal(snapshot, revision, updatedAt) {
     ...(typeof snapshot.model === "string" && Buffer.byteLength(snapshot.model, "utf8") <= 256 ? { model: snapshot.model } : {}),
     updatedAt,
   };
+  if (Array.isArray(snapshot.filesChanged)
+    && snapshot.filesChanged.length <= MAX_FILES_CHANGED
+    && snapshot.filesChanged.every((value) => typeof value === "string" && Buffer.byteLength(value, "utf8") <= 4_096)) {
+    output.filesChanged = [...snapshot.filesChanged];
+  }
+  if (snapshot.recoveryRequired === true) output.recoveryRequired = true;
+  if (typeof snapshot.recoveryId === "string" && Buffer.byteLength(snapshot.recoveryId, "utf8") <= 512) {
+    output.recoveryId = snapshot.recoveryId;
+  }
+  if (Array.isArray(snapshot.recoverySources)
+    && snapshot.recoverySources.length > 0
+    && snapshot.recoverySources.length <= RECOVERY_SOURCES.size
+    && snapshot.recoverySources.every((source) => RECOVERY_SOURCES.has(source))
+    && new Set(snapshot.recoverySources).size === snapshot.recoverySources.length) {
+    output.recoverySources = [...snapshot.recoverySources];
+  }
+  if (Array.isArray(snapshot.recoveryOperationIds)
+    && snapshot.recoveryOperationIds.length <= MAX_RECOVERY_OPERATION_IDS
+    && snapshot.recoveryOperationIds.every((opId) => typeof opId === "string" && SAFE_OPERATION_ID.test(opId))
+    && new Set(snapshot.recoveryOperationIds).size === snapshot.recoveryOperationIds.length) {
+    output.recoveryOperationIds = [...snapshot.recoveryOperationIds];
+  }
   if (snapshot.error !== undefined) output.error = normalizePublicError(snapshot.error);
   const json = JSON.stringify(output);
   if (Buffer.byteLength(json, "utf8") > MAX_STATE_BYTES) throw new JobStateError("state_error", "state_too_large");

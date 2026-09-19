@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test --test-concurrency=2",
+    "test": "node --test --test-concurrency=2 test/*.test.js",
     "test:adapter": "node --test --test-concurrency=2 test/compatibility.test.js test/adapter.test.js test/startup.test.js"
   },
   "engines": {

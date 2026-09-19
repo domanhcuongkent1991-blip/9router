@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { AppServerCompatibilityError } from "./app-server/compatibility.js";
+import { validatePublicRouterUrl } from "./router-transport.js";
 
 export const REQUIRED_CANARY_CHECKS = Object.freeze([
   "protocol", "readOnly", "status", "cancel", "resume", "approvalAccept",
@@ -50,9 +51,10 @@ export async function sourceDigest(directory) {
   return hash.digest("hex");
 }
 
-export async function readRouterIdentity({ fetchJson = fetch, baseUrl = "http://127.0.0.1:20128" } = {}) {
+export async function readRouterIdentity({ fetchJson = fetch, baseUrl } = {}) {
   let value;
   try {
+    validatePublicRouterUrl(baseUrl);
     const response = await fetchJson(`${baseUrl}/api/compatibility`, { signal: AbortSignal.timeout(5000), redirect: "error" });
     if (!response.ok) throw new Error();
     const text = await response.text();

@@ -893,6 +893,73 @@ test("does not acquire workspace leases for read-only jobs", async () => {
   assert.equal(leaseCalls, 0);
 });
 
+test("creates an immutable read grant without requesting approval", async () => {
+  let grant;
+  let decisions = 0;
+  const resolvedScope = Object.freeze({
+    workspace: "D:\\Repo",
+    access: "read-only",
+    read: Object.freeze([Object.freeze({ absolutePath: "D:\\Repo\\src", relativePath: "src", kind: "directory", identity: null })]),
+    write: Object.freeze([]),
+    allowCreate: false,
+    protectedRoots: Object.freeze([]),
+    summary: { workspace: "D:\\Repo", read: [{ path: "src", kind: "directory" }], write: [], allow_create: false },
+  });
+  const core = createGeminiCompanionCore({
+    validateRequest: async () => ({
+      task: "inspect source", workspace: "D:\\Repo", effort: "medium", access: "read-only",
+      scoped: true, timeoutMinutes: 30, runtimeFingerprint: "router-responses-v1", resolvedScope,
+    }),
+    prepareRuntime: async ({ grant: value }) => {
+      grant = value;
+      assert.equal(Object.isFrozen(value), true);
+      return {
+        compatibility: { status: "compatible", warnings: [] },
+        run: async () => ({ finalAnswer: "read", filesChanged: [], tests: [] }),
+        dispose: async () => {},
+      };
+    },
+    workspaceLeases: { acquire: async () => { throw new Error("read-only must not lease"); } },
+    redactor: createCompanionRedactor(), generateJobId: () => "job_read_grant",
+  });
+  const result = await core.runGeminiTask({ task: "inspect source", workspace: "D:\\Repo" }, {
+    requestDecision: async () => { decisions += 1; return "accept"; },
+  });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.filesChanged, []);
+  assert.equal(decisions, 0);
+  assert.equal(typeof grant.scopeHash, "string");
+  assert.equal(Object.isFrozen(grant.read), true);
+});
+
+test("bridges a write intent through awaiting approval and resumes without a preflight grant decision", async () => {
+  const persisted = [];
+  const decisions = [];
+  const gate = deferred();
+  const core = lifecycleCore({
+    persistStatus: async (status) => persisted.push(structuredClone(status)),
+    createRuntime: async () => ({
+      run: async ({ onEvent, requestDecision }) => {
+        await onEvent({ type: "write_intent", approval: {
+          type: "write_intent", operation: "replace_text", path: "src\\auth.js",
+          expectedSha256: "a".repeat(64), operationFingerprint: "b".repeat(64), deadline: Date.now() + 10_000,
+        } });
+        decisions.push(await requestDecision({ type: "write_intent" }));
+        gate.resolve();
+        return { finalAnswer: "done", filesChanged: [], tests: [] };
+      }, cancel: async () => {}, dispose: async () => {},
+    }),
+  });
+  const run = core.runGeminiTask({ ...baseRequest, access: "workspace-write" }, {
+    requestDecision: async () => "accept",
+  });
+  await gate.promise;
+  const statuses = persisted.map((status) => status.status);
+  assert.ok(statuses.includes("awaiting_approval"));
+  assert.deepEqual(decisions, ["accept"]);
+  assert.equal((await run).status, "completed");
+});
+
 test("qualifies one prepared runtime before writer mutation and reuses it for the turn", async () => {
   const calls = [];
   const prepared = {
@@ -993,4 +1060,22 @@ test("cancels a failed active turn before disposing its runtime", async () => {
   });
   assert.equal((await core.runGeminiTask(baseRequest)).status, "failed");
   assert.deepEqual(calls, ["cancel", "dispose"]);
+});
+
+test("fails closed on an invalid scoped grant and never launches the prepared runtime", async () => {
+  let prepareCalls = 0;
+  const core = lifecycleCore({
+    validateRequest: async (request) => ({
+      task: request.task, workspace: request.workspace, effort: "medium", access: "read-only",
+      timeoutMinutes: 30, scoped: true, runtimeFingerprint: "router-responses-v1",
+      resolvedScope: Object.freeze({ workspace: request.workspace, access: "read-only" }),
+    }),
+    resolveScopedRuntimeFingerprint: async () => "router-responses-v1",
+    createScopedGrant: () => ({ jobId: "forged" }),
+    prepareRuntime: async () => { prepareCalls += 1; throw new Error("prepared runtime must not launch"); },
+  });
+  const result = await core.runGeminiTask({ task: "inspect", workspace: "D:\Repo" });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.category, "protocol_error");
+  assert.equal(prepareCalls, 0);
 });

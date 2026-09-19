@@ -83,6 +83,36 @@ test("returns valid terminal records so restart status queries remain available"
   assert.deepEqual(restarted.getGeminiStatus("job_done"), terminal);
 });
 
+test("persists a bounded model through restart status recovery", async () => {
+  const files = new Map();
+  const stateRoot = "C:\\runtime\\jobs";
+  const store = createJobStateStore({
+    stateRoot, mkdirPath: async () => {},
+    writeFile: async (path, data) => files.set(path, data),
+    renamePath: async (from, to) => { files.set(to, files.get(from)); files.delete(from); },
+    readFile: async (path) => {
+      if (!files.has(path)) { const error = new Error("missing"); error.code = "ENOENT"; throw error; }
+      return files.get(path);
+    },
+    listDirectory: async () => ["job_model.json"], now: () => "now",
+  });
+  await store.persist({ jobId: "job_model", status: "completed", model: "ag/gemini-fixed" });
+  assert.equal(JSON.parse(files.get("C:\\runtime\\jobs\\job_model.json")).model, "ag/gemini-fixed");
+  const restartedStore = createJobStateStore({
+    stateRoot, mkdirPath: async () => {}, writeFile: async () => {}, renamePath: async () => {},
+    readFile: async (path) => files.get(path), listDirectory: async () => ["job_model.json"], now: () => "later",
+  });
+  const recovered = await restartedStore.reconcile();
+  const restarted = createGeminiCompanionCore({
+    validateRequest: async () => ({}), prepareRuntime: async () => ({ run: async () => ({}) }),
+    workspaceLeases: createWorkspaceLeaseManager(), redactor: createCompanionRedactor(), initialStatuses: recovered,
+  });
+  assert.equal(restarted.getGeminiStatus("job_model").model, "ag/gemini-fixed");
+
+  await store.persist({ jobId: "job_long_model", status: "completed", model: "x".repeat(257) });
+  assert.equal(Object.hasOwn(JSON.parse(files.get("C:\\runtime\\jobs\\job_long_model.json")), "model"), false);
+});
+
 test("preserves a legacy provider quota status through read, recovery, and MCP without rewriting it", async () => {
   const record = {
     jobId: "job_legacy_quota", status: "failed", revision: 1, updatedAt: "old",
