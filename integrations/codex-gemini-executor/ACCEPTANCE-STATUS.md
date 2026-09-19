@@ -6,7 +6,7 @@ must not be used to promote a runtime automatically.
 
 ## Current candidate status (2026-09-19)
 
-**HOLD for Desktop activation; candidate direct MCP execution verified.**
+**Desktop bootstrap canary PASS; general qualification and Ready for use remain HOLD.**
 Provider/model remain `nine_router` / `ag/gemini-3.8-flash`.
 Router is `0.5.81`, BUILD_ID `hzoyTQX0BWYc2RS2-Vf50`; Node is
 `C:\Program Files\nodejs\node.exe`, `v24.12.0`.
@@ -23,16 +23,32 @@ Release: `03b8dcf1a4a5`; source digest:
 - Candidate stdio report passed initialize, exactly three tools, fixed bootstrap
   read-only task, status, terminal cancel, status after a new process and clean
   shutdown. Bootstrap evidence grants only the fixed marker task.
+- Safe writer applied the candidate atomically after Desktop exit. Transaction
+  checkpoint:
+  `C:\Users\Admin\Documents\Codex\codex-portable-capabilities-checkpoints\nine-router-bootstrap-d6ae4404d9374c45bfe09fdef2c9b4c6\config.toml.before`.
+  The active entry now uses `package/src/index.js`, the isolated bootstrap runtime,
+  and the fixed read-only workspace; `required=false` remains unchanged.
+- A fresh Desktop task called the active MCP candidate successfully. Job
+  `job_45970381-64aa-4c07-ae6a-f735ab09bc7e` completed the fixed marker read with
+  output `21 bytes`, model `ag/gemini-3.8-flash`, `filesChanged=[]`, and
+  `recoveryRequired=false`. Status after completion and terminal cancel were
+  idempotent. The bootstrap runtime owner was released and all persisted jobs are
+  terminal.
+- Final host evidence matched App Server `codex-cli 0.155.0-alpha.9.2` with SHA-256
+  `bc45017e8239dc150258f69309ced9df6bbcdf5b8e4f346decf780ac0999e226`.
 - Fixed two real wire defects: recovery fields missing from the strict MCP
   output schema and internal `scoped-edit` leaking into public MCP output.
 - Qualification policy v2 binds release location, endpoint, provider and model
   allowlist. Old policy v1 records cannot be promoted unchanged.
 
-The active Desktop registration still points to its prior release. No Desktop
-restart, configuration switch or general qualification promotion is attested.
-Remaining gates are fresh Desktop candidate discovery, approval accept/decline/
-cancel and optional startup behavior. OSV coverage is limited because the
-project-local scanner is absent; no dependencies were installed or changed.
+The active Desktop registration now points to the verified candidate and the
+fixed read-only bootstrap task is attested. The bootstrap record is deliberately
+not a general qualification record. Approval accept/decline/cancel through the
+real Desktop elicitation UI, optional startup behavior for a new task, and the
+full workspace-write qualification remain pending. Do not use the MCP for general
+delegated work until those gates have their own evidence. OSV coverage is limited
+because the project-local scanner is absent; no dependencies were installed or
+changed.
 
 See [MCP-OPERATIONS.md](MCP-OPERATIONS.md) for commands and update boundaries.
 
