@@ -4,7 +4,31 @@ This is the current consolidation of the chronological evidence in
 UPGRADE-SAFETY.md. This document is not a qualified-combination.json record and
 must not be used to promote a runtime automatically.
 
-## 2026-09-12 qualification round (current)
+## Current MCP Remediation Status (2026-09-12)
+
+Offline source verification is current: checkout HEAD is
+`9b9ce0877de1b28c118698aa6f1f7bd976f4b73d`, `npm test` is **242/242**, and the
+qualified source digest still matches the companion source. The canonical
+identity is provider `nine_router`, model `ag/gemini-3.8-flash`, Codex
+`0.154.0-alpha.6.2`, and Node `v24.12.0` at
+`C:\Program Files\nodejs\node.exe`.
+
+MCP Desktop activation is **HOLD** pending an Admin-host preflight that proves
+`NINEROUTER_API_KEY` is present without exposing its value; the atomic config
+update with `env_vars`, fixed Node path and bounded host timeouts is complete.
+A fresh
+Desktop task showing `initialize` plus exactly the three companion tools.
+The MCP remains optional; CLI profile overrides and fixture canaries are not
+Desktop activation evidence. Existing canary and qualification records below
+are historical/operator-scoped evidence and must not be reused as fresh host
+proof.
+
+The fixed-Node stdio preflight passed `initialize` and `tools/list` with exactly
+the three companion tools. A missing-key negative probe remained bounded and
+did not expose credential text; this is process-level evidence, not Desktop
+task evidence.
+
+## Historical qualification round (2026-09-12; superseded for MCP activation)
 
 **Activated identity:** codex `0.154.0-alpha.6.2` (SHA-256 `081e4de4be8e38fa...`)
 via the promotion snapshot

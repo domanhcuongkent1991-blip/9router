@@ -1,6 +1,34 @@
 # Merge Readiness
 
-## Current Companion Review (2026-09-11)
+## Current MCP Remediation Status (2026-09-12)
+
+The companion source is offline-ready after the test-discovery repair, but
+Desktop MCP activation remains gated on the Admin-host credential, optional
+startup, fixed Node path and real `initialize`/`tools/list` evidence. The
+canonical model is `ag/gemini-3.8-flash`; bare `gemini-3.8-flash` is rejected.
+The MCP must remain optional and must not be promoted from CLI profile output.
+
+Current verification:
+
+- Checkout HEAD: `9b9ce0877de1b28c118698aa6f1f7bd976f4b73d`.
+- `npm test`: **242/242**, after limiting discovery to `test/*.test.js`;
+  fixture `test/fixtures/windows-job-parent.cjs` is not an independent test.
+- Current qualified identity: Codex `0.154.0-alpha.6.2`, Node `v24.12.0`
+  at `C:/Program Files/nodejs/node.exe`, provider `nine_router`, model
+  `ag/gemini-3.8-flash`; source digest matches the qualification record.
+- Admin MCP configuration was updated atomically with a checkpoint to forward
+  `NINEROUTER_API_KEY` through `env_vars`, use the fixed Node path, and set
+  host timeouts while retaining the optional MCP policy. The checkpoint is
+  retained for rollback.
+- Fixed-Node stdio preflight passed `initialize` and `tools/list` with exactly
+  `run_gemini_task`, `get_gemini_status`, and `cancel_gemini_task`; a missing-key
+  negative probe exited with a bounded message and no credential text.
+- No live Gemini call, Desktop handshake, activation, promotion, commit or
+  push is attested by this status.
+
+The following review is retained as historical evidence only.
+
+## Historical Companion Review (2026-09-11)
 
 This section supersedes the historical source-readiness, branch and scanner
 statements below **only for the current companion change**. Historical runtime

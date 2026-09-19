@@ -216,7 +216,7 @@ export async function prepareAppServerRuntime({
     const threadPolicy = {
       cwd: executionWorkspace,
       sandbox: request.access === "workspace-write" ? "workspace-write" : "read-only",
-      approvalPolicy: "on-request",
+      approvalPolicy: request.access === "read-only" ? "never" : "on-request",
     };
     const thread = request.sessionId
       ? await session.resumeThread({ threadId: request.sessionId, ...threadPolicy })

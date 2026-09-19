@@ -94,6 +94,7 @@ test("qualifies and runs the same fake App Server process through normalized eve
   assert.deepEqual(frames.filter((frame) => ["thread/start", "turn/start"].includes(frame.method)).map((frame) => frame.params.model), [
     "gemini-fixed", "gemini-fixed",
   ]);
+  assert.equal(frames.find((frame) => frame.method === "thread/start").params.approvalPolicy, "never");
   assert.deepEqual(events.map((event) => event.type), ["turn_started", "assistant_delta", "turn_completed"]);
   assert.deepEqual(warnings, ["codex_version_changed", "codex_executable_changed"]);
   await runtime.dispose();
@@ -197,6 +198,22 @@ test("generates schema and launches from the exact canonical observed executable
   }));
   assert.deepEqual(schemaObservations, [canonical]);
   assert.deepEqual(launches, [canonical]);
+  await runtime.dispose();
+});
+
+test("keeps interactive approval for workspace-write jobs", async () => {
+  const child = fakeChild();
+  const frames = protocolHarness(child);
+  const runtime = await prepareAppServerRuntime(options(child));
+  const running = runtime.run({
+    request: { task: "change", effort: "high", access: "workspace-write", model: "gemini-fixed" },
+    executionWorkspace: "C:\\jobs\\job_1", onEvent: async () => {}, requestDecision: async () => "accept",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  child.stdout.write(`${JSON.stringify({ method: "turn/started", params: { threadId: "thr_1", turn: { id: "turn_1", status: "inProgress", items: [] } } })}\n`);
+  child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: { threadId: "thr_1", turn: { id: "turn_1", status: "completed", items: [] } } })}\n`);
+  await running;
+  assert.equal(frames.find((frame) => frame.method === "thread/start").params.approvalPolicy, "on-request");
   await runtime.dispose();
 });
 

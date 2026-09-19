@@ -1,13 +1,16 @@
 import { win32 } from "node:path";
 
 const CHILD_MARKER = "NINEROUTER_GEMINI_CHILD";
-function configFor(model) {
+function configFor(model, approvalPolicy) {
   if (typeof model !== "string" || !/^[A-Za-z0-9._:/-]{1,256}$/u.test(model)) {
     throw new ChildHomeError("child_home_error", "invalid_model");
   }
+  if (!["on-request", "never"].includes(approvalPolicy)) {
+    throw new ChildHomeError("child_home_error", "invalid_approval_policy");
+  }
   return `model = "${model}"
 model_provider = "nine_router"
-approval_policy = "on-request"
+approval_policy = "${approvalPolicy}"
 sandbox_mode = "read-only"
 web_search = "disabled"
 
@@ -45,7 +48,7 @@ export function createChildHomeManager({ runtimeRoot, mkdirPath, writeFile, rena
   const tempPath = `${configPath}.tmp`;
   let preparation = Promise.resolve();
 
-  function prepare(environment, model) {
+  function prepare(environment, model, approvalPolicy = "on-request") {
     if (environment === null || typeof environment !== "object" || Array.isArray(environment)) {
       return Promise.reject(new ChildHomeError("child_home_error", "invalid_environment"));
     }
@@ -54,7 +57,7 @@ export function createChildHomeManager({ runtimeRoot, mkdirPath, writeFile, rena
     }
     let config;
     try {
-      config = configFor(model);
+      config = configFor(model, approvalPolicy);
     } catch (error) {
       return Promise.reject(error instanceof ChildHomeError
         ? error

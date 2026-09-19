@@ -18,6 +18,7 @@ test("writes model-specific isolated config atomically without credentials or pa
   assert.equal(writes.length, 1);
   assert.equal(writes[0][1].includes("SECRET"), false);
   assert.match(writes[0][1], /^model = "gemini-fast"$/mu);
+  assert.match(writes[0][1], /^approval_policy = "on-request"$/mu);
   assert.match(writes[0][1], /env_key = "NINEROUTER_API_KEY"/u);
   assert.match(writes[0][1], /wire_api = "responses"/u);
   assert.match(writes[0][1], /^web_search = "disabled"$/mu);
@@ -29,6 +30,18 @@ test("writes model-specific isolated config atomically without credentials or pa
   assert.match(writes[0][1], /stream_idle_timeout_ms = 300000/u);
   assert.equal(/mcp_servers|plugin|auth_token/u.test(writes[0][1]), false);
   assert.equal(renames.length, 1);
+});
+
+test("uses the non-interactive approval policy for read-only analysis", async () => {
+  const writes = [];
+  const manager = createChildHomeManager({
+    runtimeRoot: "C:\\Users\\Admin\\Documents\\Codex\\9router-gemini-runtime",
+    mkdirPath: async () => {},
+    writeFile: async (_path, data) => writes.push(data),
+    renamePath: async () => {},
+  });
+  await manager.prepare({ PATH: "fixed" }, "gemini-fast", "never");
+  assert.match(writes[0], /^approval_policy = "never"$/mu);
 });
 
 test("prevents recursive companion execution", async () => {
