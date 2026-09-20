@@ -103,15 +103,20 @@ export function replaceCanaryConfig(original, d, previous) {
   const eol = original.includes("\r\n") ? "\r\n" : "\n";
   const table = (value) => renderConfig("", value).replaceAll("\n", eol).slice(eol.length);
   const oldTable = table(previous);
+  const toolHeader = "[mcp_servers.nine-router-gemini-approval-canary.tools.run_gemini_task]";
+  const toolOffset = oldTable.indexOf(toolHeader);
+  check(toolOffset > 0, "previous_registration_mismatch");
+  const legacyTable = oldTable.slice(0, toolOffset - eol.length);
   const rootName = "mcp_servers.nine-router-gemini-approval-canary";
   const toolName = rootName + ".tools.run_gemini_task";
   const headers = [...original.matchAll(/^\s*\[([^\r\n]+)\]\s*$/gm)].map((match) => match[1].trim());
   check(headers.filter((name) => name === rootName).length === 1
-    && headers.filter((name) => name === toolName).length === 1
+    && headers.filter((name) => name === toolName).length <= 1
     && !headers.some((name) => name.startsWith(rootName + ".") && name !== toolName), "previous_registration_mismatch");
-  const first = original.indexOf(oldTable);
-  check(first >= 0 && first === original.lastIndexOf(oldTable), "previous_registration_mismatch");
-  return original.replace(oldTable, table(d));
+  const expected = headers.includes(toolName) ? oldTable : legacyTable;
+  const first = original.indexOf(expected);
+  check(first >= 0 && first === original.lastIndexOf(expected), "previous_registration_mismatch");
+  return original.replace(expected, table(d));
 }
 export async function verifyIdle(d) {
   for (const base of ["runtime", "scripted-runtime"]) {

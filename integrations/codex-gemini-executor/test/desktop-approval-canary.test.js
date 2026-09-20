@@ -97,6 +97,9 @@ for (const eol of ["\n", "\r\n"]) test(`replacement changes only the exact previ
   const current = renderConfig(prefix, old) + suffix;
   const changed = replaceCanaryConfig(current, next, old);
   assert.equal(changed, renderConfig(prefix, next) + suffix);
+  const legacy = current.replace(eol + '[mcp_servers.nine-router-gemini-approval-canary.tools.run_gemini_task]' + eol
+    + 'approval_mode = "approve"' + eol, "");
+  assert.equal(replaceCanaryConfig(legacy, next, old), renderConfig(prefix, next) + suffix);
   assert.throws(() => replaceCanaryConfig(current, old, old), /replacement_must_be_new/);
   for (const invalid of [current.replace("tool_timeout_sec = 300", "tool_timeout_sec = 20"),
     current + '[mcp_servers.nine-router-gemini-approval-canary.env]\nX = "x"',
