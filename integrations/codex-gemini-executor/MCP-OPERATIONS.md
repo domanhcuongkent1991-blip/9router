@@ -167,7 +167,12 @@ không thay thế quyết định UI. `desktopAcceptance` vẫn false. Productio
 chỉ bootstrap; không tạo qualification trước khi có đầy đủ bằng chứng Desktop.
 
 Để thêm canary optional, mở **Windows PowerShell ngoài Codex**, thoát Desktop,
-rồi chạy đúng source writer đã sửa (không dùng bản writer cũ trong artifact):
+rồi khởi động router từ ngoài Desktop: mở `D:\9Router\start-9router.bat`,
+chọn `1` và chờ health OK trên port `20128`. Router khởi chạy bởi tool trong
+Codex có thể kết thúc cùng Desktop; không dựa vào health trước lúc đóng Desktop.
+Launcher vẫn phải dùng đúng build `0.5.81 / hzoyTQX0BWYc2RS2-Vf50`; writer sẽ
+từ chối nếu identity khác. Không chạy thêm instance nếu port đã có owner.
+Sau đó chạy đúng source writer đã sửa (không dùng bản writer cũ trong artifact):
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\9Router\integrations\codex-gemini-executor\scripts\Set-DesktopApprovalCanarySafe.ps1 -DescriptorPath C:\Users\Admin\Documents\Codex\9router-gemini-runtime\approval-canaries\8804bed8-db89-4358-ac55-7c89afdad552\canary.json -Apply
@@ -204,6 +209,16 @@ model catalog tương đối trong `CODEX_HOME` cô lập. Writer hiện sao ch�
 catalog đó vào preview private và không thay đổi root setting ở config thật.
 Nếu dùng Windows PowerShell 5.1, tách native stdout/stderr để cảnh báo CLI không
 bị diễn giải thành lỗi dừng; không in toàn bộ output JSON chứa environment.
+
+Nếu `-Apply` cũ chỉ báo `canary_switch_failed`, kiểm tra transaction và config
+trước khi chạy lại. Ngày 2026-09-20 đã tái hiện: router unavailable làm verifier
+ghi stderr; PowerShell 5.1 với `ErrorActionPreference=Stop` ném `NativeCommandError`
+trước khi kiểm tra exit code, che mất nguyên nhân. Writer hiện dùng process streams
+tách biệt cho cả Node verifier và App Server. JSON lỗi có mã allowlist, `phase`,
+`configChanged`, `transaction`, `checkpoint`; không chứa stderr/config/secret.
+`HOLD / router_identity_unavailable / verifying_canary / configChanged=false`
+có nghĩa chưa apply: khởi động đúng router từ ngoài Desktop và xác minh health
+rồi mới chạy lại. Không sửa descriptor, giảm qualification hoặc đổi endpoint.
 
 ## Chẩn đoán nhanh
 

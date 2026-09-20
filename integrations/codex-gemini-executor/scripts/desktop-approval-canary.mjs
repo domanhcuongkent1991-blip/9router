@@ -81,7 +81,7 @@ export async function verifyHarness(descriptorPath, { router = true } = {}) {
   check(isDeepStrictEqual(manifest.runtimeIdentity, d.identity) && manifest.manifestSha256 === d.release.manifestSha256, "release_changed");
   check(await sourceDigest(win32.join(pkg, "node_modules")) === candidate.dependenciesSha256, "dependencies_changed");
   check(sha(await readFile(d.host.path)) === d.host.sha256, "host_identity_changed");
-  if (router) assert.deepEqual(await readScopedRouterIdentity({ baseUrl: d.identity.routerBaseUrl }), d.identity.router);
+  if (router) check(isDeepStrictEqual(await readScopedRouterIdentity({ baseUrl: d.identity.routerBaseUrl }), d.identity.router), "router_identity_mismatch");
   return { d, pkg, load };
 }
 export function renderConfig(original, d) {
@@ -233,6 +233,30 @@ export async function main(args = process.argv.slice(2)) {
     onerror: () => process.stderr.write("Fixture approval transport failed\n"),
   });
 }
+// Only finite local facts can cross the diagnostic boundary. Never print raw
+// exception text, paths, config, environment, or router/provider response bodies.
+export function verificationFailure(error) {
+  const allowed = new Set([
+    "router_identity_unavailable", "router_identity_mismatch", "host_identity_changed",
+    "node_identity_changed", "candidate_identity_changed", "candidate_layout_invalid",
+    "release_changed", "dependencies_changed", "harness_root_invalid", "fixture_root_invalid",
+    "harness_artifact_invalid", "harness_artifact_changed", "harness_artifacts_missing",
+    "fixture_link_or_type_invalid", "fixture_path_alias", "fixture_layout_invalid",
+    "fixture_content_changed", "canary_runtime_busy", "canary_job_unfinished",
+    "canary_registration_exists", "scripted_protocol_incomplete", "metadata_too_large",
+  ]);
+  const own = (obj, field) => {
+    try { return Object.getOwnPropertyDescriptor(obj ?? {}, field)?.value; } catch { return undefined; }
+  };
+  const reason = own(own(error, "details"), "reason");
+  const message = own(error, "message");
+  return { status: "HOLD", error: allowed.has(reason) ? reason : allowed.has(message) ? message : "canary_verification_failed" };
+}
 if (process.argv[1] && key(fileURLToPath(import.meta.url)) === key(process.argv[1])) {
-  main().catch(() => { process.stderr.write("Fixture approval canary failed; retain evidence, no retry\n"); process.exitCode = 1; });
+  main().catch((error) => {
+    if (["--verify", "--render"].includes(process.argv[2])) {
+      process.stdout.write(JSON.stringify(verificationFailure(error)) + "\n");
+    } else process.stderr.write("Fixture approval canary failed; retain evidence, no retry\n");
+    process.exitCode = 1;
+  });
 }

@@ -5,7 +5,7 @@ import { win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { createTestScratchDirectory } from "./scratch-root.js";
-import { requestFor, identifyRequest, verifyFixture, verifyIntent, renderConfig, sha, BEFORE, AFTER, CASES } from "../scripts/desktop-approval-canary.mjs";
+import { requestFor, identifyRequest, verifyFixture, verifyIntent, renderConfig, verificationFailure, sha, BEFORE, AFTER, CASES } from "../scripts/desktop-approval-canary.mjs";
 import { validateGeminiRequest } from "../src/request.js";
 const root = "C:\\tmp\\CodexScratch\\approval-test";
 
@@ -79,4 +79,19 @@ test("private preview resolves the relative catalog without modifying config or 
     fileURLToPath(new URL("./fixtures/desktop-approval-writer.ps1", import.meta.url))], { windowsHide: true, encoding: "utf8", timeout: 15000 });
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(JSON.parse(r.stdout), { passed: 5, failed: 0 });
+});
+test("verification errors expose only allowlisted local diagnostics, never exception text or getters", () => {
+  assert.deepEqual(verificationFailure(Object.assign(new Error("PRIVATE_SECRET"), {
+    details: { reason: "router_identity_unavailable" },
+  })), { status: "HOLD", error: "router_identity_unavailable" });
+  assert.equal(verificationFailure(new Error("host_identity_changed")).error, "host_identity_changed");
+  assert.deepEqual(verificationFailure(new Error("PRIVATE_SECRET")), { status: "HOLD", error: "canary_verification_failed" });
+  assert.equal(verificationFailure({ get message() { throw new Error("PRIVATE_SECRET"); } }).error, "canary_verification_failed");
+});
+test("Windows PowerShell preserves structured native failures, drains stderr and quotes arguments", () => {
+  const r = spawnSync("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+    fileURLToPath(new URL("./fixtures/desktop-approval-native.ps1", import.meta.url))], { windowsHide: true, encoding: "utf8", timeout: 20000 });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), { passed: 10, failed: 0 });
+  assert.ok(!r.stdout.includes("PRIVATE_NATIVE_STDERR_SENTINEL"));
 });

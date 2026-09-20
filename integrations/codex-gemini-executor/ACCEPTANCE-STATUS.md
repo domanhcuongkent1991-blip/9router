@@ -110,6 +110,23 @@ Release: `03b8dcf1a4a5`; source digest:
   in its private profile and reads native stdout/stderr separately. Apply has
   **not** run. Use the corrected source writer, not the earlier copy bundled
   under the harness artifact. See MCP-OPERATIONS.md for the exact external command.
+- After the operator reported `HOLD/canary_switch_failed`, no new approval
+  transaction or registration was present. Router health was unavailable.
+  Reproducing the native verifier call on Windows PowerShell 5.1 produced
+  `NativeCommandError`: stderr under Stop prevented checking the child exit code.
+  This explains the generic failure and is not a qualification or provider failure.
+  Source writer/verifier now preserve finite diagnostic codes and report the
+  failing phase, whether this transaction wrote config, and checkpoint paths.
+  Raw stderr and exception messages are not emitted.
+- Writer correction verification: **367/367** offline tests, no skips, including
+  native stderr, argument quoting, timeout and diagnostic-redaction regressions.
+  Log: `C:\tmp\CodexScratch\2026-09-20-mcp-stability\approval-writer-hold-fix-offline.log`.
+  With router stopped the real preview returned `router_identity_unavailable`,
+  phase `verifying_canary`, `configChanged=false`, no transaction. After starting
+  the exact existing standalone build, preview passed in transaction
+  `nine-router-approval-0a27a464ecb94c82bb8c3c1b0ac0f628`; before/after config hash
+  was unchanged. Apply still has not run and Desktop UI evidence is pending.
+  The immutable canary/core artifacts were not rewritten; use the source writer.
 - Fixed two real wire defects: recovery fields missing from the strict MCP
   output schema and internal `scoped-edit` leaking into public MCP output.
 - Qualification policy v2 binds release location, endpoint, provider and model
