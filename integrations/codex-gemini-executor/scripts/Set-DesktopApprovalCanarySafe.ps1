@@ -82,6 +82,9 @@ function Assert-CanaryGuard {
 }
 function Test-CanaryConfig([string]$Path) {
     $d = [IO.File]::ReadAllText($DescriptorPath) | ConvertFrom-Json
+    $configText = [IO.File]::ReadAllText($Path)
+    $toolMatches = [regex]::Matches($configText,
+        '(?ms)^\[mcp_servers\.nine-router-gemini-approval-canary\.tools\.run_gemini_task\]\s*\r?\napproval_mode\s*=\s*"approve"\s*(?=\r?$|\r?\n\[|\z)')
     $oldHome = $env:CODEX_HOME
     try {
         $env:CODEX_HOME = Split-Path -Parent $Path
@@ -93,7 +96,7 @@ function Test-CanaryConfig([string]$Path) {
             -and $m.transport.args.Count -eq 2 -and $m.transport.args[0] -eq (Join-Path $d.root 'desktop-approval-canary.mjs') `
             -and $m.transport.args[1] -eq $DescriptorPath -and $m.startup_timeout_sec -eq 30 -and $m.tool_timeout_sec -eq 300 `
             -and $m.transport.env_vars.Count -eq 1 -and $m.transport.env_vars[0] -eq 'NINEROUTER_API_KEY' `
-            -and $m.tools.run_gemini_task.approval_mode -eq 'approve'
+            -and $toolMatches.Count -eq 1
     } finally { $env:CODEX_HOME = $oldHome }
 }
 
