@@ -199,11 +199,14 @@ function operationFingerprint(name, args) {
 }
 
 function writeIntentApproval(call, request) {
-  const timeout = Number.isInteger(request?.approvalTimeoutMs)
+  const explicitTimeout = Number.isInteger(request?.approvalTimeoutMs)
     && request.approvalTimeoutMs > 0
-    && request.approvalTimeoutMs <= MAX_APPROVAL_TIMEOUT_MS
-    ? request.approvalTimeoutMs : DEFAULT_APPROVAL_TIMEOUT_MS;
+    && request.approvalTimeoutMs <= MAX_APPROVAL_TIMEOUT_MS;
   const jobDeadline = Number.isFinite(request?.approvalDeadline) ? request.approvalDeadline : Infinity;
+  const remainingJob = Number.isFinite(jobDeadline) ? Math.max(0, jobDeadline - Date.now()) : undefined;
+  const timeout = explicitTimeout
+    ? request.approvalTimeoutMs
+    : remainingJob === undefined ? DEFAULT_APPROVAL_TIMEOUT_MS : Math.min(MAX_APPROVAL_TIMEOUT_MS, remainingJob);
   const deadline = Math.min(Date.now() + timeout, jobDeadline);
   if (!Number.isFinite(deadline) || deadline <= Date.now()) fail("approval_required", "write_intent_timeout");
   const approval = {
@@ -222,7 +225,7 @@ async function awaitWriteDecision(requestDecision, approval, signal) {
   if (typeof requestDecision !== "function") fail("approval_required", "write_intent_unavailable");
   const remaining = approval.deadline === undefined
     ? DEFAULT_APPROVAL_TIMEOUT_MS
-    : Math.min(DEFAULT_APPROVAL_TIMEOUT_MS, approval.deadline - Date.now());
+    : Math.min(MAX_APPROVAL_TIMEOUT_MS, approval.deadline - Date.now());
   if (!Number.isFinite(remaining) || remaining <= 0 || remaining > MAX_APPROVAL_TIMEOUT_MS) {
     fail("approval_required", "write_intent_timeout");
   }

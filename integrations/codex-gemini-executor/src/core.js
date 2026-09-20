@@ -195,7 +195,7 @@ export function createGeminiCompanionCore({
   now = Date.now,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
-  approvalTimeoutMs = 120_000,
+  approvalTimeoutMs,
 }) {
   requireDependency(typeof validateRequest === "function", "validate_request_required");
   const usesPreparedRuntime = typeof prepareRuntime === "function";
@@ -216,7 +216,9 @@ export function createGeminiCompanionCore({
   requireDependency(Number.isInteger(maxAccumulatedOutputBytes) && maxAccumulatedOutputBytes > 0, "invalid_output_limit");
   requireDependency(Number.isInteger(cleanupTimeoutMs) && cleanupTimeoutMs > 0, "invalid_cleanup_timeout");
   requireDependency(Number.isInteger(persistenceTimeoutMs) && persistenceTimeoutMs > 0, "invalid_persistence_timeout");
-  requireDependency(Number.isInteger(approvalTimeoutMs) && approvalTimeoutMs > 0, "invalid_approval_timeout");
+  if (approvalTimeoutMs !== undefined) {
+    requireDependency(Number.isInteger(approvalTimeoutMs) && approvalTimeoutMs > 0, "invalid_approval_timeout");
+  }
   requireDependency(Array.isArray(initialStatuses), "invalid_initial_statuses");
 
   const jobs = new Map();
@@ -770,7 +772,7 @@ export function createGeminiCompanionCore({
         request: {
           ...job.request,
           approvalDeadline: job.deadline,
-          approvalTimeoutMs,
+          ...(approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs }),
         },
         executionWorkspace: workspace.executionWorkspace,
         worktreePath: workspace.worktreePath ?? null,

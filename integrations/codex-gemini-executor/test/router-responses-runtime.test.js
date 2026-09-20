@@ -133,6 +133,26 @@ test("pauses a validated workspace write before broker mutation and resumes exac
   assert.equal(dispatches, 1);
 });
 
+test("uses the remaining bounded job deadline for an approval when no fixed approval timeout is configured", async () => {
+  let round = 0;
+  const approvals = [];
+  const jobDeadline = Date.now() + 180_000;
+  const { runtime } = runtimeFixture(async () => {
+    round += 1;
+    return round === 1
+      ? response([writeCall("replace_1")])
+      : response([message("done")]);
+  }, async () => ({ text: "changed" }));
+  const result = await runtime.run({
+    request: { task: "edit", access: "workspace-write", effort: "medium", approvalDeadline: jobDeadline },
+    requestDecision: async (approval) => { approvals.push(approval); return "accept"; },
+  });
+  assert.equal(result.finalAnswer, "done");
+  assert.equal(approvals.length, 1);
+  assert.ok(approvals[0].deadline <= jobDeadline);
+  assert.ok(approvals[0].deadline - Date.now() > 115_000);
+});
+
 test("fails closed for declined, cancelled, invalid, or timed-out write intent decisions", async () => {
   for (const decision of ["decline", "cancel", "unexpected", new Promise(() => {})]) {
     let rounds = 0;
