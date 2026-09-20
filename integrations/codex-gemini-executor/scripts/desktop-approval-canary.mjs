@@ -93,6 +93,8 @@ export function renderConfig(original, d) {
     "args = [" + [win32.join(d.root, "desktop-approval-canary.mjs"), win32.join(d.root, "canary.json")].map(q).join(", ") + "]",
     "cwd = " + q(d.root), "enabled = true", "required = false",
     "startup_timeout_sec = 30", "tool_timeout_sec = 300", 'env_vars = ["NINEROUTER_API_KEY"]', "",
+    "[mcp_servers.nine-router-gemini-approval-canary.tools.run_gemini_task]",
+    "approval_mode = \"approve\"", "",
   ].join(eol);
   return original + block;
 }
@@ -101,9 +103,14 @@ export function replaceCanaryConfig(original, d, previous) {
   const eol = original.includes("\r\n") ? "\r\n" : "\n";
   const table = (value) => renderConfig("", value).replaceAll("\n", eol).slice(eol.length);
   const oldTable = table(previous);
-  const headers = original.match(/^\s*\[[^\r\n]*nine-router-gemini-approval-canary[^\r\n]*\]/gm) ?? [];
-  check(headers.length === 1 && original.includes(oldTable)
-    && original.indexOf(oldTable) === original.lastIndexOf(oldTable), "previous_registration_mismatch");
+  const rootName = "mcp_servers.nine-router-gemini-approval-canary";
+  const toolName = rootName + ".tools.run_gemini_task";
+  const headers = [...original.matchAll(/^\s*\[([^\r\n]+)\]\s*$/gm)].map((match) => match[1].trim());
+  check(headers.filter((name) => name === rootName).length === 1
+    && headers.filter((name) => name === toolName).length === 1
+    && !headers.some((name) => name.startsWith(rootName + ".") && name !== toolName), "previous_registration_mismatch");
+  const first = original.indexOf(oldTable);
+  check(first >= 0 && first === original.lastIndexOf(oldTable), "previous_registration_mismatch");
   return original.replace(oldTable, table(d));
 }
 export async function verifyIdle(d) {

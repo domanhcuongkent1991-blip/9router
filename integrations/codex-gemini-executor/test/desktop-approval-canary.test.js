@@ -61,6 +61,7 @@ for (const eol of ["\n", "\r\n"]) test(`canary config is additive and optional (
   const rendered = renderConfig(original, { root, identity: { node: { path: "C:\\Program Files\\nodejs\\node.exe" } } });
   assert.ok(rendered.startsWith(original));
   assert.match(rendered, /required = false/);
+  assert.match(rendered, /approval_mode = "approve"/);
   assert.equal((rendered.match(/\[mcp_servers\.nine-router-gemini\]/g) ?? []).length, 1);
   assert.doesNotMatch(rendered, /NINEROUTER_API_KEY\s*=/);
   assert.throws(() => renderConfig(rendered, {}), /canary_registration_exists/);

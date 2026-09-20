@@ -92,7 +92,8 @@ function Test-CanaryConfig([string]$Path) {
             -and $m.transport.command -eq $node -and $m.transport.cwd -eq $d.root `
             -and $m.transport.args.Count -eq 2 -and $m.transport.args[0] -eq (Join-Path $d.root 'desktop-approval-canary.mjs') `
             -and $m.transport.args[1] -eq $DescriptorPath -and $m.startup_timeout_sec -eq 30 -and $m.tool_timeout_sec -eq 300 `
-            -and $m.transport.env_vars.Count -eq 1 -and $m.transport.env_vars[0] -eq 'NINEROUTER_API_KEY'
+            -and $m.transport.env_vars.Count -eq 1 -and $m.transport.env_vars[0] -eq 'NINEROUTER_API_KEY' `
+            -and $m.tools.run_gemini_task.approval_mode -eq 'approve'
     } finally { $env:CODEX_HOME = $oldHome }
 }
 
