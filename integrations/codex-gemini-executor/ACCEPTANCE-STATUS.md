@@ -107,8 +107,9 @@ Release: `03b8dcf1a4a5`; source digest:
   `nine-router-approval-d0c41cb314d54e748659b3e029f74400`. It appends an optional
   `nine-router-gemini-approval-canary` registration and leaves the existing MCP
   entry byte-for-byte intact. The preview supplies the relative model catalog
-  in its private profile and reads native stdout/stderr separately. Apply has
-  **not** run. Use the corrected source writer, not the earlier copy bundled
+  in its private profile and reads native stdout/stderr separately. At that
+  preview stage apply had not run (see the subsequent operator application below).
+  Use the corrected source writer, not the earlier copy bundled
   under the harness artifact. See MCP-OPERATIONS.md for the exact external command.
 - After the operator reported `HOLD/canary_switch_failed`, no new approval
   transaction or registration was present. Router health was unavailable.
@@ -125,8 +126,28 @@ Release: `03b8dcf1a4a5`; source digest:
   phase `verifying_canary`, `configChanged=false`, no transaction. After starting
   the exact existing standalone build, preview passed in transaction
   `nine-router-approval-0a27a464ecb94c82bb8c3c1b0ac0f628`; before/after config hash
-  was unchanged. Apply still has not run and Desktop UI evidence is pending.
+  was unchanged. At that verification stage apply had not run.
   The immutable canary/core artifacts were not rewritten; use the source writer.
+- Operator application subsequently succeeded at 07:36 local time on 2026-09-20:
+  `APPLIED_FIXTURE_CANARY_ONLY`, transaction
+  `nine-router-approval-442faf55b4bf4fb39b5d84c58a309bb2`, with retained
+  `config.toml.before`. Both primary and canary entries match the applied proposal
+  through authority `mcp get`. The whole config hash changed after apply, but
+  these two entries did not drift. The running Desktop App Server belongs to
+  Admin and its hash matches the authority. Router health/build still match.
+- Actual Desktop task discovery now includes all three canary tools. The first
+  Desktop accept attempt was job `job_bdda999e-c439-4065-8c53-c305233198bc`:
+  started 00:41:11.958 UTC, requested the fixed write approval at 00:41:18.311 UTC,
+  and failed at 00:43:18.336 UTC without a recorded decision. Its terminal result
+  is `approval_required`; the tool call subsequently returned
+  `Invalid or expired requestState`. The two-minute approval deadline elapsed
+  before any accepted continuation; this does not establish whether a UI prompt
+  was shown or answered. Operator UI observation is still required.
+  Marker hash remains the original `956e76069b906fe4ec1bdb788daca06a0886a050349f6c74dc11f296bf82f6f7`,
+  `filesChanged=[]`, no journal directory or owner lock remains, and status from
+  the actual Desktop tool agrees. No retry, subsequent scenario, config write
+  or qualification promotion was performed after failure. Primary preflight
+  still passes config/router/release checks and holds on missing general evidence.
 - Fixed two real wire defects: recovery fields missing from the strict MCP
   output schema and internal `scoped-edit` leaking into public MCP output.
 - Qualification policy v2 binds release location, endpoint, provider and model
