@@ -3,7 +3,7 @@
 // The immutable candidate's real core, broker and MCP bridge are used unchanged.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, writeFile, lstat, readdir, realpath, mkdir } from "node:fs/promises";
+import { readFile, writeFile, appendFile, lstat, readdir, realpath, mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { win32 } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -95,6 +95,16 @@ export function renderConfig(original, d) {
     "startup_timeout_sec = 30", "tool_timeout_sec = 300", 'env_vars = ["NINEROUTER_API_KEY"]', "",
   ].join(eol);
   return original + block;
+}
+export function replaceCanaryConfig(original, d, previous) {
+  check(key(d.root) !== key(previous.root), "replacement_must_be_new");
+  const eol = original.includes("\r\n") ? "\r\n" : "\n";
+  const table = (value) => renderConfig("", value).replaceAll("\n", eol).slice(eol.length);
+  const oldTable = table(previous);
+  const headers = original.match(/^\s*\[[^\r\n]*nine-router-gemini-approval-canary[^\r\n]*\]/gm) ?? [];
+  check(headers.length === 1 && original.includes(oldTable)
+    && original.indexOf(oldTable) === original.lastIndexOf(oldTable), "previous_registration_mismatch");
+  return original.replace(oldTable, table(d));
 }
 export async function verifyIdle(d) {
   for (const base of ["runtime", "scripted-runtime"]) {
@@ -210,14 +220,22 @@ export async function createHarnessCore(descriptorPath, { mode = "desktop" } = {
   return { core: wrapped, d, pkg, load };
 }
 export async function main(args = process.argv.slice(2)) {
-  if (args[0] === "--verify" || args[0] === "--render") {
+  if (["--verify", "--render", "--verify-replacement", "--render-replacement"].includes(args[0])) {
     const { d } = await verifyHarness(args[1]);
     await verifyIdle(d);
     const protocol = await json(win32.join(d.root, "scripted-protocol.json"));
     check(protocol.status === "pass" && protocol.desktopAcceptance === false
       && isDeepStrictEqual(protocol.scenarios.map((s) => s.scenario), CASES), "scripted_protocol_incomplete");
     for (const c of CASES) await verifyFixture(d.fixtureRoot, c);
-    if (args[0] === "--render") {
+    if (args[0].endsWith("-replacement")) {
+      const { d: previous } = await verifyHarness(args[2], { router: false });
+      await verifyIdle(previous);
+      check(key(d.root) !== key(previous.root), "replacement_must_be_new");
+      if (args[0] === "--render-replacement") {
+        const original = await readFile(args[3], "utf8");
+        await writeFile(args[4], replaceCanaryConfig(original, d, previous), { flag: "wx", mode: 0o600 });
+      }
+    } else if (args[0] === "--render") {
       const original = await readFile(args[2], "utf8");
       await writeFile(args[3], renderConfig(original, d), { flag: "wx", mode: 0o600 });
     }
@@ -225,11 +243,19 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   check(args.length === 1, "descriptor_required");
-  const { core, pkg, load } = await createHarnessCore(args[0]);
+  const { core, d, pkg, load } = await createHarnessCore(args[0]);
   const { createGeminiMcpServer } = await load("mcp-bridge.js");
   const require = createRequire(win32.join(pkg, "package.json"));
   const { serveStdio } = await import(pathToFileURL(require.resolve("@modelcontextprotocol/server/stdio")).href);
-  return serveStdio(() => createGeminiMcpServer({ core }), {
+  let traceWrites = Promise.resolve();
+  let traceCount = 0;
+  const onApprovalTrace = (event) => {
+    if (++traceCount > 128) return;
+    traceWrites = traceWrites.catch(() => {}).then(() => appendFile(
+      win32.join(d.root, "desktop-evidence", "approval-trace.jsonl"), JSON.stringify(event) + "\n", { mode: 0o600 }));
+    return traceWrites;
+  };
+  return serveStdio(() => createGeminiMcpServer({ core, onApprovalTrace }), {
     onerror: () => process.stderr.write("Fixture approval transport failed\n"),
   });
 }
@@ -244,6 +270,7 @@ export function verificationFailure(error) {
     "fixture_link_or_type_invalid", "fixture_path_alias", "fixture_layout_invalid",
     "fixture_content_changed", "canary_runtime_busy", "canary_job_unfinished",
     "canary_registration_exists", "scripted_protocol_incomplete", "metadata_too_large",
+    "replacement_must_be_new", "previous_registration_mismatch",
   ]);
   const own = (obj, field) => {
     try { return Object.getOwnPropertyDescriptor(obj ?? {}, field)?.value; } catch { return undefined; }
@@ -254,7 +281,7 @@ export function verificationFailure(error) {
 }
 if (process.argv[1] && key(fileURLToPath(import.meta.url)) === key(process.argv[1])) {
   main().catch((error) => {
-    if (["--verify", "--render"].includes(process.argv[2])) {
+    if (["--verify", "--render", "--verify-replacement", "--render-replacement"].includes(process.argv[2])) {
       process.stdout.write(JSON.stringify(verificationFailure(error)) + "\n");
     } else process.stderr.write("Fixture approval canary failed; retain evidence, no retry\n");
     process.exitCode = 1;

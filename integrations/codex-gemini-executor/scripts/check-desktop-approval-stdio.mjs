@@ -11,7 +11,8 @@ export async function runScriptedProtocol(descriptorPath) {
   const require = createRequire(win32.join(pkg, "package.json"));
   const { InMemoryTransport } = await import(pathToFileURL(require.resolve("@modelcontextprotocol/server")));
   const { createGeminiMcpServer } = await load("mcp-bridge.js");
-  const server = createGeminiMcpServer({ core });
+  const trace = [];
+  const server = createGeminiMcpServer({ core, onApprovalTrace: (event) => { if (trace.length < 128) trace.push(event); } });
   const [client, transport] = InMemoryTransport.createLinkedPair();
   const pending = new Map();
   let next = 0;
@@ -28,7 +29,9 @@ export async function runScriptedProtocol(descriptorPath) {
       prompts++;
       const reply = () => client.send({ jsonrpc: "2.0", id: message.id, result: {
         action: current === "timeout" ? "cancel" : current,
-        ...(current === "accept" ? { content: { decision: "accept" } } : {}),
+        ...(current === "accept" ? { content: {
+          decision: "accept", commandActions: message.params.requestedSchema.properties.commandActions.const,
+        } } : {}),
       } });
       if (current === "timeout") {
         // Do not decide within the real 1-minute job deadline. Afterwards release
@@ -46,7 +49,7 @@ export async function runScriptedProtocol(descriptorPath) {
     clearTimeout(p.timer); pending.delete(message.id);
     if (message.error) p.reject(new Error("protocol_error")); else p.resolve(message.result);
   };
-  const report = { status: "running", scope: "scripted protocol and real fixture writes; not Desktop UI", desktopAcceptance: false, scenarios: [] };
+  const report = { status: "running", scope: "scripted protocol and real fixture writes; not Desktop UI", desktopAcceptance: false, scenarios: [], trace };
   try {
     await client.start(); await server.connect(transport);
     const initialized = await send("initialize", { protocolVersion: "2025-11-25", capabilities: { elicitation: { form: {} } }, clientInfo: { name: "qualification-scripted", version: "1" } });

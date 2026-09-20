@@ -5,7 +5,7 @@ import { win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { createTestScratchDirectory } from "./scratch-root.js";
-import { requestFor, identifyRequest, verifyFixture, verifyIntent, renderConfig, verificationFailure, sha, BEFORE, AFTER, CASES } from "../scripts/desktop-approval-canary.mjs";
+import { requestFor, identifyRequest, verifyFixture, verifyIntent, renderConfig, replaceCanaryConfig, verificationFailure, sha, BEFORE, AFTER, CASES } from "../scripts/desktop-approval-canary.mjs";
 import { validateGeminiRequest } from "../src/request.js";
 const root = "C:\\tmp\\CodexScratch\\approval-test";
 
@@ -87,6 +87,21 @@ test("verification errors expose only allowlisted local diagnostics, never excep
   assert.equal(verificationFailure(new Error("host_identity_changed")).error, "host_identity_changed");
   assert.deepEqual(verificationFailure(new Error("PRIVATE_SECRET")), { status: "HOLD", error: "canary_verification_failed" });
   assert.equal(verificationFailure({ get message() { throw new Error("PRIVATE_SECRET"); } }).error, "canary_verification_failed");
+});
+for (const eol of ["\n", "\r\n"]) test(`replacement changes only the exact previous canary table (${JSON.stringify(eol)})`, () => {
+  const old = { root: root + "\\old", identity: { node: { path: "C:\\Program Files\\nodejs\\node.exe" } } };
+  const next = { ...old, root: root + "\\new" };
+  const prefix = 'model = "unchanged"' + eol;
+  const suffix = '[mcp_servers.other]' + eol + 'command = "unchanged"' + eol;
+  const current = renderConfig(prefix, old) + suffix;
+  const changed = replaceCanaryConfig(current, next, old);
+  assert.equal(changed, renderConfig(prefix, next) + suffix);
+  assert.throws(() => replaceCanaryConfig(current, old, old), /replacement_must_be_new/);
+  for (const invalid of [current.replace("tool_timeout_sec = 300", "tool_timeout_sec = 20"),
+    current + '[mcp_servers.nine-router-gemini-approval-canary.env]\nX = "x"',
+    current + current, prefix + suffix]) {
+    assert.throws(() => replaceCanaryConfig(invalid, next, old), /previous_registration_mismatch/);
+  }
 });
 test("Windows PowerShell preserves structured native failures, drains stderr and quotes arguments", () => {
   const r = spawnSync("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",

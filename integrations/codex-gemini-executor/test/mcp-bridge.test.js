@@ -535,7 +535,9 @@ test("SDK 2.0 legacy shim performs elicitation and re-enters the same handler", 
   });
   clientTransport.onmessage = (message) => {
     if (message.method === "elicitation/create") {
-      void clientTransport.send({ jsonrpc: "2.0", id: message.id, result: { action: "accept", content: { decision: "accept" } } });
+      void clientTransport.send({ jsonrpc: "2.0", id: message.id, result: { action: "accept", content: {
+        decision: "accept", commandActions: message.params.requestedSchema.properties.commandActions.const,
+      } } });
       return;
     }
     const pending = responses.get(message.id);
@@ -597,4 +599,72 @@ test("SDK 2.0 modern seam emits input_required and accepts a correlated retry", 
   assert.equal(result.structuredContent.status, "completed");
   assert.deepEqual(approval.decisions, ["accept"]);
   await server.close();
+});
+
+test("accepts a form response that echoes exactly the advertised commandActions const", async () => {
+  const approval = approvalCore();
+  const server = createGeminiMcpServer({ core: approval.core, ServerClass: FakeServer });
+  const run = server.tools.get("run_gemini_task").handler;
+  const request = { task: "x", workspace: "D:\\Repo" };
+  const first = await run(request, modernContext().context);
+  const facts = first.inputRequests.approval.params.requestedSchema.properties.commandActions.const;
+  const result = await run(request, modernContext({ requestState: first.requestState,
+    inputResponses: { approval: { action: "accept", content: { decision: "accept", commandActions: facts } } },
+  }).context);
+  assert.equal(result.structuredContent.status, "completed");
+  assert.deepEqual(approval.decisions, ["accept"]);
+});
+
+test("form response cannot change advertised facts or include unknown content fields", async () => {
+  for (const content of [
+    { decision: "accept", commandActions: "forged facts" },
+    { decision: "accept", commandActions: null },
+    { decision: "accept", commandActions: "null", extra: "secret" },
+  ]) {
+    const approval = approvalCore();
+    const server = createGeminiMcpServer({ core: approval.core, ServerClass: FakeServer });
+    const run = server.tools.get("run_gemini_task").handler;
+    const request = { task: "x", workspace: "D:\\Repo" };
+    const first = await run(request, modernContext().context);
+    const result = await run(request, modernContext({ requestState: first.requestState,
+      inputResponses: { approval: { action: "accept", content } },
+    }).context);
+    assert.equal(result.structuredContent.status, "failed");
+    assert.deepEqual(approval.decisions, ["cancel"]);
+  }
+});
+
+test("approval diagnostics contain timing and finite decisions, not tokens or approval text", async () => {
+  const events = [];
+  const approval = approvalCore(1, { command: "PRIVATE_APPROVAL_TEXT" });
+  const server = createGeminiMcpServer({ core: approval.core, ServerClass: FakeServer,
+    generateCorrelationId: () => "PRIVATE_CORRELATION_TOKEN", onApprovalTrace: (event) => events.push(event) });
+  const request = { task: "PRIVATE_TASK", workspace: "D:\\Repo" };
+  const run = server.tools.get("run_gemini_task").handler;
+  const first = await run(request, modernContext().context);
+  await server.options.requestState.verify(first.requestState);
+  await run(request, modernContext({ requestState: first.requestState,
+    inputResponses: { approval: { action: "accept", content: { decision: "accept" } } },
+  }).context);
+  assert.deepEqual(events.map((e) => e.event), ["approval_requested", "state_verified", "continuation_received", "decision_received", "job_terminal"]);
+  assert.ok(events.every((e) => Number.isFinite(Date.parse(e.at))));
+  assert.equal(JSON.stringify(events).includes("PRIVATE_"), false);
+  await assert.rejects(server.options.requestState.verify("PRIVATE_FORGED_TOKEN"));
+  assert.equal(events.at(-1).event, "state_rejected");
+  assert.equal(JSON.stringify(events).includes("PRIVATE_"), false);
+});
+
+test("approval observer failures do not change the decision or cause an unhandled rejection", async () => {
+  for (const observer of [() => { throw new Error("secret"); }, async () => { throw new Error("secret"); }]) {
+    const approval = approvalCore();
+    const server = createGeminiMcpServer({ core: approval.core, ServerClass: FakeServer, onApprovalTrace: observer });
+    const run = server.tools.get("run_gemini_task").handler;
+    const args = { task: "x", workspace: "D:\\Repo" };
+    const first = await run(args, modernContext().context);
+    const result = await run(args, modernContext({ requestState: first.requestState,
+      inputResponses: { approval: { action: "accept", content: { decision: "accept" } } },
+    }).context);
+    assert.equal(result.structuredContent.status, "completed");
+    assert.deepEqual(approval.decisions, ["accept"]);
+  }
 });

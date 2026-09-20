@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$DescriptorPath, [switch]$Apply)
+param([Parameter(Mandatory)][string]$DescriptorPath, [string]$PreviousDescriptorPath, [switch]$Apply)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -56,22 +56,29 @@ function Invoke-CanaryVerifier([string[]]$Arguments) {
             'harness_artifact_invalid', 'harness_artifact_changed', 'harness_artifacts_missing',
             'fixture_link_or_type_invalid', 'fixture_path_alias', 'fixture_layout_invalid',
             'fixture_content_changed', 'canary_runtime_busy', 'canary_job_unfinished',
-            'canary_registration_exists', 'scripted_protocol_incomplete', 'metadata_too_large')
+            'canary_registration_exists', 'scripted_protocol_incomplete', 'metadata_too_large',
+            'replacement_must_be_new', 'previous_registration_mismatch')
         if ($value.PSObject.Properties['error'] -and $value.error -in $allowed) { throw $value.error }
         throw 'canary_verification_failed'
     }
+}
+function Assert-CanaryArtifacts {
+    if ($PreviousDescriptorPath) { Invoke-CanaryVerifier @('--verify-replacement', $DescriptorPath, $PreviousDescriptorPath) }
+    else { Invoke-CanaryVerifier @('--verify', $DescriptorPath) }
 }
 function Assert-CanaryGuard {
     $script:phase = 'checking_desktop'
     Assert-DesktopClosed
     $script:phase = 'checking_processes'
     $d = [IO.File]::ReadAllText($DescriptorPath) | ConvertFrom-Json
+    $previous = if ($PreviousDescriptorPath) { [IO.File]::ReadAllText($PreviousDescriptorPath) | ConvertFrom-Json } else { $null }
     foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='node.exe'")) {
         if (-not $process.CommandLine) { throw 'process_identity_unavailable' }
         if ($process.CommandLine.Contains($d.root)) { throw 'canary_process_running' }
+        if ($previous -and $process.CommandLine.Contains($previous.root)) { throw 'previous_canary_process_running' }
     }
     $script:phase = 'verifying_canary'
-    Invoke-CanaryVerifier @('--verify', $DescriptorPath)
+    Assert-CanaryArtifacts
 }
 function Test-CanaryConfig([string]$Path) {
     $d = [IO.File]::ReadAllText($DescriptorPath) | ConvertFrom-Json
@@ -111,7 +118,7 @@ try {
     if ($requestedApply) { Assert-CanaryGuard }
     else {
         $phase = 'verifying_canary'
-        Invoke-CanaryVerifier @('--verify', $DescriptorPath)
+        Assert-CanaryArtifacts
     }
     $phase = 'creating_preview'
     $transaction = Join-Path 'C:\Users\Admin\Documents\Codex\codex-portable-capabilities-checkpoints' ('nine-router-approval-' + [guid]::NewGuid().ToString('N'))
@@ -121,13 +128,16 @@ try {
     $proposal = Join-Path $profile 'config.toml'
     $before = Get-ConfigHash $target
     $phase = 'rendering_preview'
-    Invoke-CanaryVerifier @('--render', $DescriptorPath, $target, $proposal)
+    if ($PreviousDescriptorPath) {
+        Invoke-CanaryVerifier @('--render-replacement', $DescriptorPath, $PreviousDescriptorPath, $target, $proposal)
+    } else { Invoke-CanaryVerifier @('--render', $DescriptorPath, $target, $proposal) }
     $after = Get-ConfigHash $proposal
     if ((Get-ConfigHash $target) -ne $before) { throw 'config_concurrent_edit' }
     $phase = 'validating_preview'
     Copy-PreviewCatalog $target $profile
     if (-not (Test-CanaryConfig $proposal)) { throw 'canary_config_invalid' }
-    $plan = @{ status = 'PREVIEW_VALIDATED'; descriptorPath = $DescriptorPath; configPath = $target; beforeSha256 = $before; afterSha256 = $after; readiness = 'HOLD' }
+    $plan = @{ status = 'PREVIEW_VALIDATED'; descriptorPath = $DescriptorPath; previousDescriptorPath = $PreviousDescriptorPath;
+        configPath = $target; beforeSha256 = $before; afterSha256 = $after; readiness = 'HOLD' }
     Write-NewBytes (Join-Path $transaction 'plan.json') ([Text.UTF8Encoding]::new($false).GetBytes(($plan | ConvertTo-Json)))
     if ($requestedApply) {
         $phase = 'applying_config'

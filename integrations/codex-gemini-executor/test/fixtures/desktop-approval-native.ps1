@@ -4,7 +4,7 @@ $root = Join-Path $env:NINEROUTER_TEST_SCRATCH_ROOT ('approval native ' + [guid]
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '..\..\scripts\Set-DesktopApprovalCanarySafe.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw 'writer_parse_failed' }
-foreach ($name in @('ConvertTo-CanaryNativeArgument', 'Invoke-CanaryNative', 'Invoke-CanaryVerifier', 'Assert-CanaryGuard')) {
+foreach ($name in @('ConvertTo-CanaryNativeArgument', 'Invoke-CanaryNative', 'Invoke-CanaryVerifier', 'Assert-CanaryArtifacts', 'Assert-CanaryGuard')) {
     $helper = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
     . ([scriptblock]::Create($helper.Extent.Text))
 }

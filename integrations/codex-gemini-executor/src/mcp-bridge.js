@@ -21,7 +21,6 @@ import {
 } from "./error-classification.js";
 
 const decisionSchema = z.enum(["accept", "decline", "cancel"]);
-const decisionObjectSchema = z.object({ decision: decisionSchema }).strict();
 const jobIdSchema = z.string().min(1).max(512);
 const scopePathSchema = z.string().min(1).max(4096);
 const publicScopeSchema = z.object({
@@ -186,17 +185,28 @@ function approvalMessage(approval) {
 // instead of parsing the display message. Not required: legacy clients that
 // only answer {decision} stay valid.
 function commandApprovalSchema(approval) {
-  const facts = approval?.type === "write_intent" || approval?.type === "job_scope"
-    ? approval : approval?.commandActions ?? null;
   return {
     type: "object",
     properties: {
       decision: { type: "string", enum: ["accept", "decline", "cancel"] },
-      commandActions: { type: "string", const: JSON.stringify(facts) },
+      commandActions: { type: "string", const: approvalFacts(approval) },
     },
     required: ["decision"],
     additionalProperties: false,
   };
+}
+
+function approvalFacts(approval) {
+  return JSON.stringify(approval?.type === "write_intent" || approval?.type === "job_scope"
+    ? approval : approval?.commandActions ?? null);
+}
+
+// A conforming form client may return the optional const field it was shown.
+// Accept that exact value or its omission, never caller-modified facts or extras.
+function decisionObjectSchema(approval) {
+  return z.object({ decision: decisionSchema,
+    commandActions: z.literal(approvalFacts(approval)).optional(),
+  }).strict();
 }
 
 function stateFrom(context) {
@@ -212,13 +222,24 @@ function stateFrom(context) {
   }
 }
 
-export function createGeminiMcpServer({ core, ServerClass = McpServer, generateCorrelationId = randomUUID }) {
+export function createGeminiMcpServer({ core, ServerClass = McpServer, generateCorrelationId = randomUUID,
+  onApprovalTrace = () => {} }) {
   if (!core || typeof core.runGeminiTask !== "function" || typeof core.getGeminiStatus !== "function"
     || typeof core.cancelGeminiTask !== "function") throw new TypeError("A Gemini companion core is required");
   if (typeof generateCorrelationId !== "function") throw new TypeError("A correlation ID generator is required");
+  if (typeof onApprovalTrace !== "function") throw new TypeError("Approval trace must be a function");
   const pendingByToken = new Map();
   const pendingByJob = new Map();
   const activeRuns = new Set();
+
+  function trace(event, pending, facts = {}) {
+    // Caller payloads, approval facts/text and continuation tokens never enter
+    // diagnostics. Observer failures cannot authorize or resume a job.
+    try {
+      Promise.resolve(onApprovalTrace(Object.freeze({ event, at: new Date().toISOString(),
+        ...(pending?.jobId ? { jobId: pending.jobId } : {}), ...facts }))).catch(() => {});
+    } catch { /* diagnostics cannot alter execution */ }
+  }
 
   function cleanupPending(pending) {
     if (pending.cleaned) return;
@@ -279,6 +300,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
         const display = approvalForDisplay(approval, core.modelPolicy?.defaultModel);
         const decision = deferred();
         pending.currentApproval = { approval: display, decision };
+        trace("approval_requested", pending);
         pending.approvalReady.resolve();
         return decision.promise;
       },
@@ -288,7 +310,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
         jobId: pending.jobId ?? "job_unavailable", status: "failed", error: classifyCompanionError(error),
       } }),
     );
-    pending.completion.then(() => cleanupPending(pending));
+    pending.completion.then(() => { trace("job_terminal", pending); cleanupPending(pending); });
     return pending;
   }
 
@@ -342,6 +364,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
       if (!pending) throw new Error("invalid_approval_correlation");
       pendingByToken.delete(state);
       pending.tokens.delete(state);
+      trace("continuation_received", pending);
       if (pending.fingerprint !== requestFingerprint(request) || !pending.currentApproval) return failPending(pending);
 
       const response = inputResponse(context?.mcpReq?.inputResponses, "approval");
@@ -349,9 +372,13 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
       if (response.kind === "elicit" && response.action === "decline") decision = "decline";
       else if (response.kind === "elicit" && response.action === "cancel") decision = "cancel";
       else if (response.kind === "elicit" && response.action === "accept") {
-        decision = acceptedContent(context?.mcpReq?.inputResponses, "approval", decisionObjectSchema)?.decision;
+        decision = acceptedContent(context?.mcpReq?.inputResponses, "approval", decisionObjectSchema(pending.currentApproval.approval))?.decision;
       }
-      if (!decisionSchema.safeParse(decision).success) return failPending(pending);
+      if (!decisionSchema.safeParse(decision).success) {
+        trace("decision_rejected", pending);
+        return failPending(pending);
+      }
+      trace("decision_received", pending, { decision });
       const current = pending.currentApproval;
       pending.currentApproval = null;
       pending.approvalReady = deferred();
@@ -382,8 +409,15 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
     {
       capabilities: { tools: {} },
       requestState: {
-        verify: async (state) => {
-          if (typeof state !== "string" || !pendingByToken.has(state)) throw new Error("invalid state");
+        verify: async (state, context) => {
+          const response = inputResponse(context?.mcpReq?.inputResponses, "approval");
+          const facts = response.kind === "elicit" && decisionSchema.safeParse(response.action).success
+            ? { action: response.action } : {};
+          if (typeof state !== "string" || !pendingByToken.has(state)) {
+            trace("state_rejected", null, facts);
+            throw new Error("invalid state");
+          }
+          trace("state_verified", pendingByToken.get(state), facts);
           return state;
         },
       },
@@ -392,6 +426,7 @@ export function createGeminiMcpServer({ core, ServerClass = McpServer, generateC
 
   if (server.server) {
     server.server.onclose = () => {
+      trace("channel_closed");
       for (const pending of [...activeRuns]) void failPending(pending);
     };
   }
