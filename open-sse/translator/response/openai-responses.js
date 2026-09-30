@@ -15,18 +15,21 @@ import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } fro
  * Translate OpenAI chunk to Responses API events
  * @returns {Array} Array of events with { event, data } structure
  */
+
 export function openaiToOpenAIResponsesResponse(chunk, state) {
   if (!chunk) {
     return flushEvents(state);
   }
 
   // Usage arrives on a final choices-less chunk (stream_options.include_usage).
+  // Captured before the choices guard below: OpenAI reports usage on a trailing
+  // chunk whose `choices` array is empty, and returning early would drop it.
   if (chunk.usage && typeof chunk.usage === "object") state.chatUsage = chunk.usage;
   if (!Array.isArray(state.outputItems)) state.outputItems = [];
   if (state.chatUsage === undefined) state.chatUsage = null;
 
   if (!chunk.choices?.length) return [];
-  
+
   const events = [];
   const nextSeq = () => ++state.seq;
   
@@ -101,12 +104,16 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
     }
 
     if (content) {
+      // The answer starts, so thinking is over. Upstreams that send reasoning via
+      // reasoning_content never emit "</think>", so close it here rather than at finish.
+      closeReasoning(state, emit);
       emitTextContent(state, emit, idx, content);
     }
   }
 
   // Handle tool_calls (empty array is truthy; require a real call)
   if (delta.tool_calls && delta.tool_calls.length) {
+    closeReasoning(state, emit);
     closeMessage(state, emit, idx);
     for (const tc of delta.tool_calls) {
       emitToolCall(state, emit, tc);
@@ -118,11 +125,23 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
     for (const i in state.msgItemAdded) closeMessage(state, emit, i);
     closeReasoning(state, emit);
     for (const i in state.funcCallIds) closeToolCall(state, emit, i);
-    // Completed must be emitted here, not at flush: the streaming pipeline
-    // terminates the client response when the provider stream ends, before a
-    // deferred flush can run. Usage arrives on a later chunk on some providers
-    // and is therefore only present when the provider bundles it into the
-    // final choices chunk.
+// Completed must be emitted here, not unconditionally at flush: the streaming
+    // pipeline terminates the client response when the provider stream ends, and
+    // the disconnect-aware wrapper drops transform-flush output once the
+    // controller reports disconnected at upstream end (the deferral regression
+    // of 2026-09-12, seen on the wire as "stream closed before
+    // response.completed"). Losing the terminal event is far worse than a
+    // response.completed that carries no usage.
+    //
+    // Upstream defers when usage is still unknown, on the theory that the
+    // trailing choices-less usage chunk has not been parsed yet. That is only
+    // safe when flushEvents() actually runs and its output survives: on a pivot
+    // (Claude/Gemini/Kiro upstream) translateResponse() drops the terminal null
+    // chunk before it reaches us, so flushEvents() is never called at all. Only
+    // the direct openai:openai-responses route is safe to defer on, and there
+    // the deferral still risks racing the disconnect above — so completion is
+    // always emitted inline here and flushEvents() only backstops the case where
+    // the provider never sent a finish_reason.
     sendCompleted(state, emit);
   }
 
@@ -184,16 +203,16 @@ function closeReasoning(state, emit) {
       part: { type: RESPONSES_ITEM.SUMMARY_TEXT, text: state.reasoningBuf }
     });
 
-    const reasoningItem = withItemStatus({
+    const item = withItemStatus({
       id: state.reasoningId,
       type: RESPONSES_ITEM.REASONING,
       summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text: state.reasoningBuf }]
     }, "done");
-    state.outputItems.push({ outputIndex: state.reasoningIndex, item: reasoningItem });
+    state.outputItems.push({ outputIndex: state.reasoningIndex, item });
     emit("response.output_item.done", {
       type: "response.output_item.done",
       output_index: state.reasoningIndex,
-      item: reasoningItem
+      item
     });
   }
 }
@@ -258,17 +277,17 @@ function closeMessage(state, emit, idx) {
       part: { type: RESPONSES_ITEM.OUTPUT_TEXT, annotations: [], logprobs: [], text: fullText }
     });
 
-    const messageItem = withItemStatus({
+    const item = withItemStatus({
       id: msgId,
       type: RESPONSES_ITEM.MESSAGE,
       content: [{ type: RESPONSES_ITEM.OUTPUT_TEXT, annotations: [], logprobs: [], text: fullText }],
       role: ROLE.ASSISTANT
     }, "done");
-    state.outputItems.push({ outputIndex: parseInt(idx), item: messageItem });
+    state.outputItems.push({ outputIndex: parseInt(idx), item });
     emit("response.output_item.done", {
       type: "response.output_item.done",
       output_index: parseInt(idx),
-      item: messageItem
+      item
     });
   }
 }
@@ -378,7 +397,7 @@ function closeToolCall(state, emit, idx) {
       });
     }
 
-    const toolCallItem = withItemStatus({
+    const item = withItemStatus({
       id: `${custom ? "ctc" : "fc"}_${callId}`,
       type: custom ? RESPONSES_ITEM.CUSTOM_TOOL_CALL : RESPONSES_ITEM.FUNCTION_CALL,
       ...(custom ? { input: extractCustomToolInput(args) } : { arguments: args }),
@@ -386,17 +405,28 @@ function closeToolCall(state, emit, idx) {
       name: identity.name || "",
       ...(identity.namespace ? { namespace: identity.namespace } : {}),
     }, "done");
-    state.outputItems.push({ outputIndex: parseInt(idx), item: toolCallItem });
+    state.outputItems.push({ outputIndex: parseInt(idx), item });
     emit("response.output_item.done", {
       type: "response.output_item.done",
       output_index: parseInt(idx),
-      item: toolCallItem
+      item
     });
 
     state.funcItemDone[idx] = true;
     state.funcArgsDone[idx] = true;
   }
 }
+
+// response.completed carries the finished Response object, so response.output has
+// to repeat the items already delivered in response.output_item.done. Clients that
+// build their final result from the terminal event (GitHub Copilot CLI, the OpenAI
+// SDK "final response" helpers) otherwise treat the turn as empty even though the
+// text was streamed - see issue #4307.
+//
+// The completed items accumulate in state.outputItems as { outputIndex, item }
+// pairs, which buildResponsesCompleted() orders by index so response.output
+// matches the order the items were emitted in. Each close helper runs at most
+// once per index, so a repeated close cannot duplicate an entry.
 
 function sendCompleted(state, emit) {
   if (!state.completedSent) {
