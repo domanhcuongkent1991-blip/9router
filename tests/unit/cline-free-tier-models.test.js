@@ -110,7 +110,11 @@ describe("cline-free namespace pricing", () => {
   it("still bills the paid twin at its published rate", async () => {
     const { getPricingForModel } = await import("../../open-sse/providers/pricing.js");
     expect(getPricingForModel("cline", "deepseek/deepseek-v4.1-flash").input).toBe(0.14);
-    expect(getPricingForModel("cline", "meta/muse-spark-1.3-contributor")).toBeNull();
+    // v0.5.95 ships the Meta Muse provider and seeds muse-spark contributor ids
+    // into global MODEL_PRICING, so any namespace resolves them to the published
+    // contributor rate (the cline-free alias above stays free).
+    expect(getPricingForModel("cline", "meta/muse-spark-1.3-contributor").input).toBe(0.10);
+    expect(getPricingForModel("cline", "meta/muse-spark-1.3-contributor").output).toBe(0.20);
   });
 
   it("zero price survives cost calculation over a large usage", async () => {

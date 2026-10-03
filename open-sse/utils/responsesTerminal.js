@@ -27,8 +27,11 @@ export function responsesUsageFromChat(chatUsage) {
   const outputTokens = normalized.completion_tokens;
   if (inputTokens !== undefined) usage.input_tokens = inputTokens;
   if (outputTokens !== undefined) usage.output_tokens = outputTokens;
+  // Always derive the total: upstreams report inconsistent totals (0, stale
+  // aggregates) next to real input/output counts, and Responses clients trust
+  // the completed event's usage for context accounting (issue #3432).
   if (inputTokens !== undefined || outputTokens !== undefined) {
-    usage.total_tokens = normalized.total_tokens ?? (inputTokens ?? 0) + (outputTokens ?? 0);
+    usage.total_tokens = (inputTokens ?? 0) + (outputTokens ?? 0);
   }
 
   const inputDetails = {};

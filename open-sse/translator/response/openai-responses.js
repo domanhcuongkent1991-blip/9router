@@ -15,6 +15,38 @@ import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } fro
  * Translate OpenAI chunk to Responses API events
  * @returns {Array} Array of events with { event, data } structure
  */
+// Upstream Chat Completions usage -> Responses API usage shape.
+// Without this, /v1/responses never reports usage: Responses clients (Codex CLI)
+// keep their "context used" gauge pinned at 0 and never auto-compact, so a long
+// session grows until the upstream context limit rejects it (9router issue #3432).
+//
+// Note this is stored under state.responsesUsage, NOT state.usage: state.usage is
+// owned by the stream layer, which fills it with normalizeUsage()-shaped counts
+// (prompt_tokens/prompt_tokens_details) and hands it to finalizeStream() for
+// logging and cost accounting. Overwriting it with this shape silently drops
+// cached/reasoning tokens from those stats.
+function toResponsesUsage(usage) {
+  if (!usage || typeof usage !== "object") return null;
+
+  const inputTokens = [usage.input_tokens, usage.prompt_tokens].find(Number.isInteger);
+  const outputTokens = [usage.output_tokens, usage.completion_tokens].find(Number.isInteger);
+  // Some upstreams attach zeroed placeholders to every chunk. Wait for real counts
+  // so response.completed cannot freeze the placeholder before the usage trailer.
+  if (inputTokens === undefined || outputTokens === undefined || inputTokens + outputTokens <= 0) {
+    return null;
+  }
+  const responseUsage = {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: inputTokens + outputTokens
+  };
+  const cachedTokens = [usage.input_tokens_details?.cached_tokens, usage.prompt_tokens_details?.cached_tokens].find(Number.isInteger);
+  const reasoningTokens = [usage.output_tokens_details?.reasoning_tokens, usage.completion_tokens_details?.reasoning_tokens].find(Number.isInteger);
+  if (Number.isInteger(cachedTokens)) responseUsage.input_tokens_details = { cached_tokens: cachedTokens };
+  if (Number.isInteger(reasoningTokens)) responseUsage.output_tokens_details = { reasoning_tokens: reasoningTokens };
+
+  return responseUsage;
+}
 
 export function openaiToOpenAIResponsesResponse(chunk, state) {
   if (!chunk) {
@@ -24,11 +56,17 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
   // Usage arrives on a final choices-less chunk (stream_options.include_usage).
   // Captured before the choices guard below: OpenAI reports usage on a trailing
   // chunk whose `choices` array is empty, and returning early would drop it.
+  // responsesUsage (integer-validated) gates the deferred completion; chatUsage
+  // is the raw payload buildResponsesCompleted maps into the terminal event.
+  const responseUsage = toResponsesUsage(chunk.usage);
+  if (responseUsage) state.responsesUsage = responseUsage;
   if (chunk.usage && typeof chunk.usage === "object") state.chatUsage = chunk.usage;
   if (!Array.isArray(state.outputItems)) state.outputItems = [];
   if (state.chatUsage === undefined) state.chatUsage = null;
 
-  if (!chunk.choices?.length) return [];
+  if (!chunk.choices?.length) {
+    return state.completionPending && state.responsesUsage ? flushEvents(state) : [];
+  }
 
   const events = [];
   const nextSeq = () => ++state.seq;
@@ -125,24 +163,17 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
     for (const i in state.msgItemAdded) closeMessage(state, emit, i);
     closeReasoning(state, emit);
     for (const i in state.funcCallIds) closeToolCall(state, emit, i);
-// Completed must be emitted here, not unconditionally at flush: the streaming
-    // pipeline terminates the client response when the provider stream ends, and
-    // the disconnect-aware wrapper drops transform-flush output once the
-    // controller reports disconnected at upstream end (the deferral regression
-    // of 2026-09-12, seen on the wire as "stream closed before
-    // response.completed"). Losing the terminal event is far worse than a
-    // response.completed that carries no usage.
-    //
-    // Upstream defers when usage is still unknown, on the theory that the
-    // trailing choices-less usage chunk has not been parsed yet. That is only
-    // safe when flushEvents() actually runs and its output survives: on a pivot
-    // (Claude/Gemini/Kiro upstream) translateResponse() drops the terminal null
-    // chunk before it reaches us, so flushEvents() is never called at all. Only
-    // the direct openai:openai-responses route is safe to defer on, and there
-    // the deferral still risks racing the disconnect above — so completion is
-    // always emitted inline here and flushEvents() only backstops the case where
-    // the provider never sent a finish_reason.
-    sendCompleted(state, emit);
+    // Completed is emitted inline on pivots (Claude/Gemini/Kiro upstream):
+    // there translateResponse() drops the terminal null chunk before it reaches
+    // us, so flushEvents() is never called and deferring would swallow the
+    // terminal event entirely (the deferral regression of 2026-09-12).
+    // On the direct openai:openai-responses route, when usage has not arrived
+    // yet, defer: stream.js flushes the pending completion at [DONE] or after
+    // the 3s watchdog, both of which run inside the live transform rather than
+    // at stream teardown, so the disconnect race no longer applies.
+    const flushReachesUs = state.targetFormat === FORMATS.OPENAI;
+    if (state.responsesUsage || !flushReachesUs) sendCompleted(state, emit);
+    else state.completionPending = true;
   }
 
   return events;
