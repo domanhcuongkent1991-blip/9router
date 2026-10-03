@@ -4,6 +4,7 @@ import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
 import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
 import { buildClientToolNameLookup, normalizeToolCallNamesInObject } from "./toolNameNormalize.js";
+import { restoreToolNames } from "./opencodeFingerprint.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
@@ -45,8 +46,7 @@ export function createSSEStream(options = {}) {
     provider = null,
     reqLogger = null,
     toolNameMap = null,
-    clientToolNameLookup = null,
-    customToolNames = null,
+    clientToolNameLookup = null,    customToolNames = null,
     namespaceToolMap = null,
     model = null,
     connectionId = null,
@@ -60,7 +60,8 @@ export function createSSEStream(options = {}) {
   let usage = null;
 
   // Passthrough tool-name normalization source: an explicit lookup from the
-  // handler, else built from the client request body's own tool list.
+  // handler (built before executors mutate the request body), else built from
+  // the body's tool list — the fallback is only as fresh as that list.
   const toolNameLookup = clientToolNameLookup || buildClientToolNameLookup(body?.tools);
 
   // Per-stream decoder with stream:true to correctly handle multi-byte chars split across chunks
@@ -152,7 +153,7 @@ export function createSSEStream(options = {}) {
 
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             try {
-              const parsed = JSON.parse(trimmed.slice(5).trim());
+              let parsed = JSON.parse(trimmed.slice(5).trim());
 
               const idFixed = fixInvalidId(parsed);
 
@@ -189,6 +190,17 @@ export function createSSEStream(options = {}) {
                     fieldsInjected = true;
                   }
                 }
+              }
+
+              // Restore tool-call names the request side renamed (e.g. the OpenCode
+              // fingerprint lowercases Bash/Read to bash/read) back to the client's
+              // spelling — streaming passthrough previously skipped this, unlike the
+              // non-streaming and SSE→JSON paths. restoreToolNames returns a new
+              // object when it rewrote something.
+              const restored = restoreToolNames(parsed, toolNameMap);
+              if (restored !== parsed) {
+                parsed = restored;
+                fieldsInjected = true;
               }
 
               // Rewrite wrong-case tool-call names back to the client's declared
@@ -527,7 +539,7 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, clientToolNameLookup = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, clientToolNameLookup = null, toolNameMap = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     provider,
@@ -537,6 +549,7 @@ export function createPassthroughStreamWithLogger(provider = null, reqLogger = n
     body,
     onStreamComplete,
     apiKey,
-    clientToolNameLookup
+    clientToolNameLookup,
+    toolNameMap
   });
 }

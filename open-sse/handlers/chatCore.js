@@ -375,6 +375,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Most executors return their registry format. Cursor AgentService is an
   // exception: it is decoded by the executor into OpenAI-compatible output.
   let providerResponseFormat = targetFormat;
+  // Client-declared tool names must be captured BEFORE executor.execute():
+  // fingerprinting executors (e.g. OpenCode's lowercase quartet) mutate the
+  // request body in place, so a lookup built afterwards would map the client's
+  // own names to their mutated spelling and un-restore restored names.
+  const clientToolNameLookup = buildClientToolNameLookup(body?.tools);
   try {
     const result = await executor.execute({
       model,
@@ -494,9 +499,6 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(statusCode, errMsg, resetsAtMs, upstreamResponseHeaders(providerResponse.headers));
   }
 
-  // Client-declared tool names, lowercased → canonical spelling. Used to fix
-  // wrong-case tool_call names emitted by models (ZCode "Tool not found: bash").
-  const clientToolNameLookup = buildClientToolNameLookup(body?.tools);
   const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, clientToolNameLookup };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false);

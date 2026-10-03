@@ -74,6 +74,32 @@ describe("passthrough streaming tool-name normalization", () => {
     const out = await pumpThroughPassthrough([raw, "data: [DONE]\n\n"], body);
     expect(out).toContain(raw);
   });
+
+  it("restores fingerprint-renamed names via toolNameMap on the streaming path", async () => {
+    // OpenCode free-tier lowercases Bash/Read to bash/read upstream; the
+    // streaming passthrough must restore them exactly like non-streaming does.
+    const renameMap = new Map([["bash", "Bash"], ["read", "Read"]]);
+    const raw = sseLine({ id: "chatcmpl-4", object: "chat.completion.chunk", created: 1234567890, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "read", arguments: "{}" } }] } }] });
+    const stream = createPassthroughStreamWithLogger("opencode", null, "m", "c", null, null, null, null, renameMap);
+    const encoder = new TextEncoder();
+    const writer = stream.writable.getWriter();
+    const reader = stream.readable.getReader();
+    const writePromise = (async () => {
+      await writer.write(encoder.encode(raw));
+      await writer.write(encoder.encode("data: [DONE]\n\n"));
+      await writer.close();
+    })();
+    let text = "";
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    await writePromise;
+    expect(text).toContain('"name":"Read"');
+    expect(text).not.toContain('"name":"read"');
+  });
 });
 
 const { executeMock } = vi.hoisted(() => ({
@@ -113,7 +139,10 @@ vi.mock("../../open-sse/utils/streamHandler.js", () => ({
     handleComplete: vi.fn(),
     handleError: vi.fn(),
   })),
-  pipeWithDisconnect: vi.fn(),
+  // Real signature: pipeWithDisconnect(providerResponse, transformStream, ...rest)
+  // returns the piped stream synchronously.
+  pipeWithDisconnect: vi.fn((providerResponse, transformStream) =>
+    providerResponse.body.pipeThrough(transformStream)),
 }));
 
 vi.mock("../../open-sse/services/tokenRefresh.js", () => ({
@@ -140,6 +169,7 @@ vi.mock("@/lib/usageDb.js", () => ({
 }));
 
 const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+const { recordRenamedToolNames } = await import("../../open-sse/utils/opencodeFingerprint.js");
 
 describe("non-streaming passthrough tool-name normalization", () => {
   function makeOptions() {
@@ -200,5 +230,66 @@ describe("non-streaming passthrough tool-name normalization", () => {
     const calls = body?.choices?.[0]?.message?.tool_calls;
     expect(Array.isArray(calls)).toBe(true);
     expect(calls[0].function.name).toBe("Read");
+  });
+});
+
+describe("streaming passthrough restores fingerprint-renamed names end to end", () => {
+  it("returns the client's spelling when the executor renamed Bash→bash upstream", async () => {
+    // Simulate a fingerprinting executor faithfully: it MUTATES the request
+    // body in place (lowercases the quartet + appends decoy tools) and records
+    // the rename map on that same object. The client tool lookup must have
+    // been captured BEFORE this mutation, otherwise normalization would map
+    // restored names back to their mutated lowercase spelling.
+    executeMock.mockReset();
+    executeMock.mockImplementation(async ({ body }) => {
+      recordRenamedToolNames(body, new Map([["bash", "Bash"], ["read", "Read"]]));
+      body.tools = [
+        { type: "function", function: { name: "bash", description: "run a command" } },
+        { type: "function", function: { name: "read", description: "read a file" } },
+        { type: "function", function: { name: "glob", description: "decoy" } },
+        { type: "function", function: { name: "grep", description: "decoy" } },
+      ];
+      const sse = [
+        `data: ${JSON.stringify({ id: "s1", object: "chat.completion.chunk", created: 1, model: "m", choices: [{ index: 0, delta: { role: "assistant" } }], usage: null })}\n\n`,
+        `data: ${JSON.stringify({ id: "s1", object: "chat.completion.chunk", created: 1, model: "m", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "bash", arguments: "{}" } }] } }], usage: null })}\n\n`,
+        "data: [DONE]\n\n",
+      ].join("");
+      return {
+        response: new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }),
+        url: "https://opencode.ai/zen/v1/chat/completions",
+        headers: {},
+        transformedBody: null,
+      };
+    });
+
+    const body = {
+      model: "oc/space-bunny-free",
+      stream: true,
+      messages: [{ role: "user", content: "call the bash tool" }],
+      tools: CLIENT_TOOLS,
+    };
+    const res = await handleChatCore({
+      body,
+      modelInfo: { provider: "opencode", model: "space-bunny-free" },
+      credentials: { apiKey: "sk-test", providerSpecificData: {} },
+      connectionId: "test-conn",
+      headroomEnabled: false,
+      rtkEnabled: false,
+      cavemanEnabled: false,
+      ponytailEnabled: false,
+      clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: {} },
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    expect(res?.success).toBe(true);
+    const reader = res.response.body.getReader();
+    const dec = new TextDecoder();
+    let text = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += dec.decode(value, { stream: true });
+    }
+    expect(text).toContain('"name":"Bash"');
+    expect(text).not.toContain('"name":"bash"');
   });
 });
