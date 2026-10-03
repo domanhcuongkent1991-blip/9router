@@ -3,6 +3,7 @@ import { FORMATS } from "../translator/formats.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
 import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
+import { buildClientToolNameLookup, normalizeToolCallNamesInObject } from "./toolNameNormalize.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
@@ -44,6 +45,7 @@ export function createSSEStream(options = {}) {
     provider = null,
     reqLogger = null,
     toolNameMap = null,
+    clientToolNameLookup = null,
     customToolNames = null,
     namespaceToolMap = null,
     model = null,
@@ -56,6 +58,10 @@ export function createSSEStream(options = {}) {
 
   let buffer = "";
   let usage = null;
+
+  // Passthrough tool-name normalization source: an explicit lookup from the
+  // handler, else built from the client request body's own tool list.
+  const toolNameLookup = clientToolNameLookup || buildClientToolNameLookup(body?.tools);
 
   // Per-stream decoder with stream:true to correctly handle multi-byte chars split across chunks
   const decoder = new TextDecoder("utf-8", { fatal: false });
@@ -183,6 +189,13 @@ export function createSSEStream(options = {}) {
                     fieldsInjected = true;
                   }
                 }
+              }
+
+              // Rewrite wrong-case tool-call names back to the client's declared
+              // spelling (e.g. "bash" → "Bash") so case-sensitive clients like
+              // ZCode don't reject them with "Tool not found".
+              if (normalizeToolCallNamesInObject(parsed, toolNameLookup)) {
+                fieldsInjected = true;
               }
 
               if (!hasValuableContent(parsed, FORMATS.OPENAI)) {
@@ -514,7 +527,7 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, clientToolNameLookup = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     provider,
@@ -523,6 +536,7 @@ export function createPassthroughStreamWithLogger(provider = null, reqLogger = n
     connectionId,
     body,
     onStreamComplete,
-    apiKey
+    apiKey,
+    clientToolNameLookup
   });
 }

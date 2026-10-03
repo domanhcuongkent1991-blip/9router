@@ -1,5 +1,6 @@
 import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConverter.js";
 import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
+import { normalizeToolCallNamesInObject } from "../../utils/toolNameNormalize.js";
 import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
@@ -187,7 +188,7 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
  * Handle case: provider forced streaming but client wants JSON.
  * Supports both Codex/Responses API SSE and standard Chat Completions SSE.
  */
-export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, customToolNames, namespaceToolMap, toolNameMap, trackDone, appendLog, reqTag, log }) {
+export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, customToolNames, namespaceToolMap, toolNameMap, trackDone, appendLog, reqTag, log, clientToolNameLookup }) {
   const contentType = providerResponse.headers.get("content-type") || "";
   const isSSE = contentType.includes("text/event-stream") || (contentType === "" && isResponsesProvider(provider));
   if (!isSSE) return null; // not handled here
@@ -317,6 +318,11 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     }
 
     if (onRequestSuccess) await onRequestSuccess();
+
+    // Rewrite wrong-case tool_call names back to the client's declared spelling
+    // (e.g. "bash" → "Bash") so case-sensitive clients don't reject the call.
+    // No-op for unknown names and for Responses-API bodies without choices.
+    normalizeToolCallNamesInObject(parsed, clientToolNameLookup);
 
     const usage = parsed.usage || {};
     appendLog({ tokens: usage, status: "200 OK" });

@@ -12,6 +12,7 @@ import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, sav
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
+import { normalizeToolCallNamesInObject } from "../../utils/toolNameNormalize.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 import {
   normalizeResponsesCustomToolNames,
@@ -307,7 +308,7 @@ export function translateNonStreamingProviderResponse(responseBody, targetFormat
 /**
  * Handle non-streaming response from provider.
  */
-export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, namespaceToolMap, trackDone, appendLog, pxpipe, reqTag, log }) {
+export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, namespaceToolMap, trackDone, appendLog, pxpipe, reqTag, log, clientToolNameLookup }) {
   trackDone();
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
@@ -346,6 +347,11 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
 
   // Decloak tool_use names once on raw Claude body, before any translation (INPUT side)
   responseBody = decloakToolNames(responseBody, toolNameMap);
+
+  // Rewrite wrong-case tool_call names back to the client's declared spelling
+  // (e.g. "bash" → "Bash") so case-sensitive clients don't reject the call.
+  // No-op for unknown names and for Claude-shaped bodies without choices.
+  normalizeToolCallNamesInObject(responseBody, clientToolNameLookup);
 
   const usage = extractUsageFromResponse(responseBody);
   appendLog({ tokens: usage, status: "200 OK" });
