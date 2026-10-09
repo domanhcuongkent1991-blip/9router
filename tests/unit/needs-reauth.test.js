@@ -131,16 +131,23 @@ describe("resetHealthStateOnActivation — a token update clears the sticky flag
     "modelLock_meta/muse-spark-1.3": "2026-10-08T00:00:00Z",
   });
 
-  it("clears needsReauth when a new token arrives", () => {
-    const normalized = resetHealthStateOnActivation(existing, { accessToken: "fresh-token" });
-    expect(normalized.needsReauth).toBeNull();
-    // token-only update must not touch health state
-    expect(normalized.testStatus).toBeUndefined();
-  });
-
   it("clears needsReauth when a new apiKey arrives", () => {
     const normalized = resetHealthStateOnActivation(existing, { apiKey: "sk-new" });
     expect(normalized.needsReauth).toBeNull();
+    // human rotation also wipes rate-limit backoff
+    expect(normalized["modelLock_meta/muse-spark-1.3"]).toBeNull();
+  });
+
+  it("auto-refresh clears needsReauth but preserves rate-limit backoff", () => {
+    const normalized = resetHealthStateOnActivation(existing, {
+      accessToken: "refreshed-token",
+      _refreshSource: "auto",
+    });
+    expect(normalized.needsReauth).toBeNull();
+    // omitted key = untouched = backoff preserved in the stored record
+    expect(normalized).not.toHaveProperty("modelLock_meta/muse-spark-1.3");
+    // the internal marker must not persist into the stored record
+    expect(normalized._refreshSource).toBeUndefined();
   });
 
   it("clears needsReauth when a health test passes", () => {

@@ -194,6 +194,10 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
     }
     if (newCredentials.projectId)            updates.projectId = newCredentials.projectId;
 
+    // Marks the patch as a programmatic refresh: connectionsRepo keeps
+    // modelLock_* backoff and only clears needsReauth.
+    updates._refreshSource = "auto";
+
     const result = await updateProviderConnection(connectionId, updates);
     log.info("TOKEN_REFRESH", "Credentials updated in localDb", {
       connectionId,

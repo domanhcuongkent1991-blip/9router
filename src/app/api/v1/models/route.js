@@ -399,10 +399,13 @@ export async function buildModelsList(kindFilter, options = {}) {
   }
 
   if (connections.length === 0) {
-    // DB unavailable -> return static models, filtered by per-model kind
+    // DB unavailable -> return static models, filtered by per-model kind.
+    // Only noAuth free providers are genuinely callable without a connection;
+    // tag the rest so model pickers can gray them out honestly.
     for (const [alias, providerModels] of Object.entries(PROVIDER_MODELS)) {
       const providerId = ALIAS_TO_PROVIDER_ID[alias] || alias;
       if (!providerMatchesKinds(providerId, kindFilter)) continue;
+      const callableWithoutConnection = FREE_PROVIDERS[providerId]?.noAuth === true;
       for (const model of providerModels) {
         if (!kindFilter.includes(modelKind(model))) continue;
         if (isDisabled(alias, model.id)) continue;
@@ -410,6 +413,7 @@ export async function buildModelsList(kindFilter, options = {}) {
           id: `${alias}/${model.id}`,
           object: "model",
           owned_by: alias,
+          ...(callableWithoutConnection ? {} : { availability: "needs-connection" }),
           capabilities: getCapabilitiesForModel(alias, model.id),
         });
       }

@@ -18,13 +18,16 @@ const MODEL_LOCK_PREFIX = "modelLock_";
 const REAUTH_CLEARING_PATCH_FIELDS = ["apiKey", "accessToken", "refreshToken"];
 
 export function resetHealthStateOnActivation(existing, patch) {
+  const isAutoRefresh = patch?._refreshSource === "auto";
   const tokenChanged = REAUTH_CLEARING_PATCH_FIELDS.some((f) => patch?.[f] !== undefined);
   if (patch?.testStatus !== "active" && !tokenChanged) return patch;
 
   const normalized = {
     ...patch,
   };
+  delete normalized._refreshSource;
   if (tokenChanged) {
+    // Fresh valid tokens end any re-auth wait — auto-refresh included.
     normalized.needsReauth = null;
   }
 
@@ -38,8 +41,13 @@ export function resetHealthStateOnActivation(existing, patch) {
     normalized.backoffLevel = 0;
   }
 
-  for (const key of Object.keys(existing || {})) {
-    if (key.startsWith(MODEL_LOCK_PREFIX)) normalized[key] = null;
+  // Rate-limit backoff (modelLock_*) must survive a background token
+  // rotation: a 429 cooldown outlives the token. Only a human rewriting the
+  // credentials (dashboard save / OAuth re-run) wipes the locks too.
+  if (!isAutoRefresh) {
+    for (const key of Object.keys(existing || {})) {
+      if (key.startsWith(MODEL_LOCK_PREFIX)) normalized[key] = null;
+    }
   }
 
   return normalized;

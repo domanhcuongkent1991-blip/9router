@@ -115,8 +115,13 @@ export function createErrorResult(statusCode, message, resetsAtMs, extraHeaders 
  * @returns {Response}
  */
 export function unavailableResponse(statusCode, message, retryAfter, retryAfterHuman, extraHeaders = null) {
-  const retryAfterSec = Math.max(Math.ceil((new Date(retryAfter).getTime() - Date.now()) / 1000), 1);
-  const msg = `${message} (${retryAfterHuman})`;
+  // retryAfter === null means "no retry on a timer" (e.g. re-auth required) —
+  // don't advertise a bogus Retry-After: 1.
+  const hasTimer = retryAfter !== null && retryAfter !== undefined;
+  const retryAfterSec = hasTimer
+    ? Math.max(Math.ceil((new Date(retryAfter).getTime() - Date.now()) / 1000), 1)
+    : 0;
+  const msg = retryAfterHuman ? `${message} (${retryAfterHuman})` : message;
   return new Response(
     JSON.stringify({ error: { message: msg } }),
     {
@@ -125,7 +130,7 @@ export function unavailableResponse(statusCode, message, retryAfter, retryAfterH
         ...extraHeaders,
         "Content-Type": "application/json",
         // Intentionally mis-cased to prevent duplicate headers
-        "retry-after": String(retryAfterSec)
+        ...(hasTimer ? { "retry-after": String(retryAfterSec) } : {})
       }
     }
   );
