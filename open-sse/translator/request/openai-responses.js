@@ -537,12 +537,12 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
 
   // Pass through other relevant fields
   if (body.temperature !== undefined) result.temperature = body.temperature;
-  if (body.max_output_tokens !== undefined) {
-    result.max_output_tokens = body.max_output_tokens;
-  } else if (body.max_completion_tokens !== undefined) {
-    result.max_output_tokens = body.max_completion_tokens;
-  } else if (body.max_tokens !== undefined) {
-    result.max_output_tokens = body.max_tokens;
+  // Responses upstreams (OpenAI + opencode.ai) require max_output_tokens >= 16;
+  // pass-through of smaller client max_tokens (title/summary calls) 400s.
+  const requestedMaxOutput =
+    body.max_output_tokens ?? body.max_completion_tokens ?? body.max_tokens;
+  if (requestedMaxOutput !== undefined) {
+    result.max_output_tokens = Math.max(16, Number(requestedMaxOutput) || 16);
   }
   if (body.top_p !== undefined) result.top_p = body.top_p;
   if (body.reasoning !== undefined) result.reasoning = body.reasoning;
