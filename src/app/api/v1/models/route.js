@@ -2,6 +2,7 @@ import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS, getModelKind } from "@/shared/co
 import {
   ALIAS_TO_ID,
   AI_PROVIDERS,
+  FREE_PROVIDERS,
   getProviderAlias,
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
@@ -619,6 +620,60 @@ export async function buildModelsList(kindFilter, options = {}) {
     }
   }
 
+  // noAuth (free) providers answer requests via the virtual "noauth"
+  // credential even with zero connections, but when >=1 connection exists
+  // elsewhere they were skipped above, hiding callable free models (e.g.
+  // `oc/...`) from OpenAI-compatible clients. List their static models.
+  if (connections.length > 0) {
+    const callableProviders = new Set(activeConnectionByProvider.keys());
+    for (const [providerId, providerInfo] of Object.entries(FREE_PROVIDERS)) {
+      if (providerInfo?.noAuth) callableProviders.add(providerId);
+    }
+
+    for (const [providerId, providerInfo] of Object.entries(FREE_PROVIDERS)) {
+      if (!providerInfo?.noAuth) continue;
+      if (activeConnectionByProvider.has(providerId)) continue;
+      if (!providerMatchesKinds(providerId, kindFilter)) continue;
+      const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
+      const outputAlias = getProviderAlias(providerId) || staticAlias;
+      for (const model of PROVIDER_MODELS[staticAlias] || []) {
+        if (!kindFilter.includes(modelKind(model))) continue;
+        if (isDisabled(staticAlias, model.id) || isDisabled(outputAlias, model.id)) continue;
+        models.push({
+          id: `${outputAlias}/${model.id}`,
+          object: "model",
+          owned_by: outputAlias,
+          capabilities: getCapabilitiesForModel(staticAlias, model.id),
+        });
+      }
+    }
+
+    // Opt-in completeness for model pickers: list providers that cannot serve
+    // requests at all right now. Default response stays untagged and clean.
+    if (options.includeAll === true) {
+      const aliasByProviderId = {};
+      for (const [alias, providerId] of Object.entries(ALIAS_TO_ID)) {
+        aliasByProviderId[providerId] = alias;
+      }
+      for (const [providerId, providerInfo] of Object.entries(AI_PROVIDERS)) {
+        if (callableProviders.has(providerId)) continue;
+        if (!providerMatchesKinds(providerId, kindFilter)) continue;
+        const alias = aliasByProviderId[providerId] || PROVIDER_ID_TO_ALIAS[providerId] || providerId;
+        for (const model of PROVIDER_MODELS[alias] || []) {
+          if (!kindFilter.includes(modelKind(model))) continue;
+          if (isDisabled(alias, model.id)) continue;
+          models.push({
+            id: `${alias}/${model.id}`,
+            object: "model",
+            owned_by: alias,
+            availability: "needs-connection",
+            capabilities: getCapabilitiesForModel(alias, model.id),
+          });
+        }
+      }
+    }
+  }
+
   const dedupedModels = [];
   const seenModelIds = new Set();
   for (const model of models) {
@@ -651,7 +706,9 @@ export async function GET(request) {
   try {
     // Detect cross-instance recursive /models fetch (another 9router fetching our /models)
     const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
-    const data = await buildModelsList([LLM_KIND], { skipDynamicFetch });
+    const includeAll =
+      new URL(request?.url || "http://localhost/v1/models").searchParams.get("include") === "all";
+    const data = await buildModelsList([LLM_KIND], { skipDynamicFetch, includeAll });
     return Response.json({ object: "list", data }, {
       headers: { "Access-Control-Allow-Origin": "*" },
     });
