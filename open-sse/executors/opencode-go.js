@@ -9,6 +9,7 @@ import {
   coerceResponsesArguments,
   coerceResponsesOutput,
 } from "../translator/formats/responsesApi.js";
+import { clampToolNamesForUpstream } from "../utils/opencodeFingerprint.js";
 
 const SESSION_HEADER = "x-opencode-session";
 const SESSION_FIELD = "_opencodeGoSession";
@@ -157,7 +158,10 @@ export class OpenCodeGoExecutor extends DefaultExecutor {
 
   transformRequest(model, body, stream, credentials) {
     const out = super.transformRequest(model, body);
-    if (!isResponsesModel(model || body?.model)) return out;
+    if (!isResponsesModel(model || body?.model)) {
+      clampToolNamesForUpstream(out, body);
+      return out;
+    }
     const normalized = normalizeResponsesInput(out.input);
     if (normalized) out.input = normalized;
     if (!Array.isArray(out.input) || out.input.length === 0) {

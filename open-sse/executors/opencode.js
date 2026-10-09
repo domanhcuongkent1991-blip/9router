@@ -6,7 +6,7 @@ import { getThinkingLevels } from "../providers/thinkingLevels.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { isMuseSparkModel } from "../providers/models/helpers.js";
-import { applyFingerprintTools } from "../utils/opencodeFingerprint.js";
+import { applyFingerprintTools, clampToolNamesForUpstream } from "../utils/opencodeFingerprint.js";
 import { ANTHROPIC_API_VERSION } from "../providers/shared.js";
 import {
   normalizeResponsesInput,
@@ -442,8 +442,14 @@ export class OpenCodeExecutor extends BaseExecutor {
       // already supplied tools. ZCode/Claude Code requests normally have
       // non-empty tool arrays; skipping cloaking here triggers 403 FreeTierError.
       applyFingerprintTools(body, true);
+      // opencode.ai rejects tool names longer than 64 chars — alias them and
+      // let response handlers restore caller spellings via the rename map.
+      clampToolNamesForUpstream(body);
     } else if (body && typeof body === "object") {
       applyFingerprintTools(body, false);
+      // opencode.ai rejects tool names longer than 64 chars — alias them and
+      // let response handlers restore caller spellings via the rename map.
+      clampToolNamesForUpstream(body);
     }
     return injectReasoningContent({ provider: this.provider, model, body });
   }

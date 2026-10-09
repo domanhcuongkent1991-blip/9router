@@ -162,6 +162,116 @@ export function takeRenamedToolNames(body) {
   return renamedToolNames.get(body) || null;
 }
 
+// Upstream tool-name length --------------------------------------------------
+
+// opencode.ai (Responses API) rejects tool names longer than 64 chars with a
+// 400 invalid_request_error — stricter than the translator's 128-char trim.
+const UPSTREAM_TOOL_NAME_MAX = 64;
+
+function ffnv1aHash64(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function makeToolAlias(name, usedNames) {
+  let salt = 0;
+  let alias;
+  do {
+    const suffix = `_${salt > 0 ? salt : ""}${ffnv1aHash64(name)}`;
+    alias = name.slice(0, UPSTREAM_TOOL_NAME_MAX - suffix.length) + suffix;
+    salt += 1;
+  } while (usedNames.has(alias));
+  usedNames.add(alias);
+  return alias;
+}
+
+function entryName(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  if (typeof entry.name === "string" && entry.name.trim()) return entry.name.trim();
+  if (entry.function && typeof entry.function.name === "string" && entry.function.name.trim()) {
+    return entry.function.name.trim();
+  }
+  return "";
+}
+
+function setEntryName(entry, alias) {
+  if (entry.function && typeof entry.function.name === "string") entry.function.name = alias;
+  else entry.name = alias;
+}
+
+/**
+ * Alias tool names longer than the upstream's 64-char limit (tools,
+ * prior-turn function_call items, named tool_choice) with a deterministic
+ * readable+hash alias, and record alias→original so response handlers can
+ * restore caller spellings via restoreToolNames. Same original name always
+ * maps to the same alias, keeping tool definitions and history consistent.
+ *
+ * @param {object} target - the body whose tools/input/tool_choice get aliased
+ *   (the object actually sent upstream)
+ * @param {object} [recordOn=target] - the body object the rename map is keyed
+ *   on; must be the reference the handler layer keeps (chatCore's
+ *   translatedBody) so takeRenamedToolNames finds it after the send
+ */
+export function clampToolNamesForUpstream(target, recordOn = target) {
+  const body = target;
+  if (!body || typeof body !== "object") return new Map();
+  const map = takeRenamedToolNames(body) || new Map();
+  const usedNames = new Set();
+  const aliasCache = new Map();
+
+  const tools = Array.isArray(body.tools) ? body.tools : [];
+  for (const tool of tools) usedNames.add(entryName(tool));
+  for (const item of (Array.isArray(body.input) ? body.input : [])) {
+    if (item?.type === "function_call") usedNames.add(entryName(item));
+  }
+
+  const aliasFor = (name) => {
+    if (!name || name.length <= UPSTREAM_TOOL_NAME_MAX) return name;
+    if (aliasCache.has(name)) return aliasCache.get(name);
+    const alias = makeToolAlias(name, usedNames);
+    aliasCache.set(name, alias);
+    map.set(alias, name);
+    return alias;
+  };
+
+  let renamed = false;
+  for (const tool of tools) {
+    const alias = aliasFor(entryName(tool));
+    if (alias !== entryName(tool)) {
+      setEntryName(tool, alias);
+      renamed = true;
+    }
+  }
+  for (const item of (Array.isArray(body.input) ? body.input : [])) {
+    if (item?.type !== "function_call") continue;
+    const alias = aliasFor(entryName(item));
+    if (alias !== entryName(item)) {
+      item.name = alias;
+      renamed = true;
+    }
+  }
+  const choice = body.tool_choice;
+  if (choice && typeof choice === "object" && !Array.isArray(choice)) {
+    const choiceName = choice.function?.name ?? (typeof choice.name === "string" ? choice.name : "");
+    if (choiceName && choiceName.length > UPSTREAM_TOOL_NAME_MAX) {
+      let alias = null;
+      for (const [candidate, original] of map) if (original === choiceName) { alias = candidate; break; }
+      if (!alias) alias = makeToolAlias(choiceName, usedNames);
+      map.set(alias, choiceName);
+      if (choice.function) choice.function.name = alias;
+      else choice.name = alias;
+      renamed = true;
+    }
+  }
+
+  if (renamed) recordRenamedToolNames(recordOn, map);
+  return map;
+}
+
 // Response side -------------------------------------------------------------
 
 /** Restore caller tool spellings in supported response/event shapes. */

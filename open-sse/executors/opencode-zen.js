@@ -8,6 +8,7 @@ import {
   coerceResponsesArguments,
   coerceResponsesOutput,
 } from "../translator/formats/responsesApi.js";
+import { clampToolNamesForUpstream } from "../utils/opencodeFingerprint.js";
 
 const SESSION_HEADER = "x-opencode-session";
 const SESSION_FIELD = "_opencodeZenSession";
@@ -284,6 +285,9 @@ export class OpenCodeZenExecutor extends DefaultExecutor {
     if (out && typeof out === "object") out.stream = true;
     if (!isResponsesModel(model || body?.model)) {
       ensureChatFingerprintTools(out);
+      // opencode.ai rejects tool names longer than 64 chars — alias and let
+      // response handlers restore caller spellings via the rename map.
+      clampToolNamesForUpstream(out, body);
       return out;
     }
     const normalized = normalizeResponsesInput(out.input);
@@ -310,6 +314,9 @@ export class OpenCodeZenExecutor extends DefaultExecutor {
     ensureResponsesFingerprintTools(out);
     normalizeResponsesTools(out);
     sanitizeResponsesItems(out);
+    // opencode.ai rejects tool names longer than 64 chars — alias and let
+    // response handlers restore caller spellings via the rename map.
+    clampToolNamesForUpstream(out, body);
     return out;
   }
 }
