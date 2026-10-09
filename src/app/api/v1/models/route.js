@@ -711,7 +711,6 @@ export async function GET(request) {
   try {
     // Detect cross-instance recursive /models fetch (another 9router fetching our /models)
     const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
-    const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
     const includeAll =
       new URL(request?.url || "http://localhost/v1/models").searchParams.get("include") === "all";
     const data = await filterModelsListForKey(
