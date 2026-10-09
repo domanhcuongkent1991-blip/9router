@@ -85,6 +85,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
+      // Invalid credentials never heal on their own — skip until the user
+      // re-authenticates (token update) or a health test passes.
+      if (c.needsReauth) return false;
       if (isModelLockActive(c, model)) return false;
       const enabled = c.providerSpecificData?.enabledModels;
       if (providerId === "codex" && Array.isArray(enabled) && enabled.length && requestedModel && !enabled.includes(requestedModel)) return false;
@@ -111,6 +114,22 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     });
 
     if (availableConnections.length === 0) {
+      // Every remaining candidate is stuck on invalid credentials. Re-auth is
+      // a human action (dashboard save / OAuth run), so report it instead of
+      // pretending a cooldown will fix it.
+      const candidates = connections.filter(c => !excludeSet.has(c.id));
+      const reauthConns = candidates.filter(c => c.needsReauth);
+      if (candidates.length > 0 && reauthConns.length === candidates.length) {
+        log.warn("AUTH", `${provider} | re-authentication required on all ${candidates.length} connection(s) | lastError=${(reauthConns[0].lastError || "").slice(0, 50)}`);
+        return {
+          allRateLimited: true,
+          needsReauth: true,
+          retryAfter: null,
+          retryAfterHuman: "",
+          lastError: reauthConns[0].lastError || "re-authentication required",
+          lastErrorCode: reauthConns[0].errorCode || null
+        };
+      }
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
       const lockedConns = connections.filter(c => isModelLockActive(c, model));
       const expiries = lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);
@@ -239,6 +258,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  * @param {string|null} model - The specific model that triggered the error
  * @returns {{ shouldFallback: boolean, cooldownMs: number }}
  */
+// Text patterns that indicate the upstream credentials themselves are invalid
+// (as opposed to a 403 for region/plan/permission reasons).
+const REAUTH_TEXT_RE = /re-?auth(?:enticate|orize)?|re-?login|please (?:re-)?log ?in|unauthenticated|invalid.{0,24}(?:token|credential)|session (?:expired|invalid)/i;
+
+function isAuthError(status, errorText) {
+  const code = Number(status);
+  if (code === 401) return true;
+  return code === 403 && REAUTH_TEXT_RE.test(String(errorText || ""));
+}
+
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
   const connections = await getProviderConnections({ provider });
@@ -268,6 +297,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+  // Invalid credentials never heal on a 2-minute lock — flag the connection
+  // so routing skips it until the user re-authenticates or a test passes.
+  const authError = isAuthError(status, errorText);
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
@@ -275,12 +307,13 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     lastError: reason,
     errorCode: status,
     lastErrorAt: new Date().toISOString(),
-    backoffLevel: newBackoffLevel ?? backoffLevel
+    backoffLevel: newBackoffLevel ?? backoffLevel,
+    ...(authError ? { needsReauth: true } : {})
   });
 
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
-  log.warn("AUTH", `${connName} locked ${lockKey} for ${Math.round(cooldownMs / 1000)}s [${status}]`);
+  log.warn("AUTH", `${connName} locked ${lockKey} for ${Math.round(cooldownMs / 1000)}s [${status}]${authError ? " (re-auth required)" : ""}`);
 
   if (provider && status && reason) {
     console.error(`❌ ${provider} [${status}]: ${reason}`);

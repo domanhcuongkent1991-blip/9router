@@ -12,18 +12,31 @@ const OPTIONAL_FIELDS = [
 
 const MODEL_LOCK_PREFIX = "modelLock_";
 
-function resetHealthStateOnActivation(existing, patch) {
-  if (patch?.testStatus !== "active") return patch;
+// Any of these fields arriving in an update patch means the credentials were
+// rewritten (dashboard save, OAuth callback, refresh) — a stale
+// needsReauth flag must not survive them.
+const REAUTH_CLEARING_PATCH_FIELDS = ["apiKey", "accessToken", "refreshToken"];
+
+export function resetHealthStateOnActivation(existing, patch) {
+  const tokenChanged = REAUTH_CLEARING_PATCH_FIELDS.some((f) => patch?.[f] !== undefined);
+  if (patch?.testStatus !== "active" && !tokenChanged) return patch;
 
   const normalized = {
     ...patch,
-    testStatus: "active",
-    lastError: Object.hasOwn(patch, "lastError") ? patch.lastError : null,
-    lastErrorAt: Object.hasOwn(patch, "lastErrorAt") ? patch.lastErrorAt : null,
-    errorCode: null,
-    rateLimitedUntil: null,
-    backoffLevel: 0,
   };
+  if (tokenChanged) {
+    normalized.needsReauth = null;
+  }
+
+  if (patch?.testStatus === "active") {
+    normalized.testStatus = "active";
+    normalized.needsReauth = null;
+    normalized.lastError = Object.hasOwn(patch, "lastError") ? patch.lastError : null;
+    normalized.lastErrorAt = Object.hasOwn(patch, "lastErrorAt") ? patch.lastErrorAt : null;
+    normalized.errorCode = null;
+    normalized.rateLimitedUntil = null;
+    normalized.backoffLevel = 0;
+  }
 
   for (const key of Object.keys(existing || {})) {
     if (key.startsWith(MODEL_LOCK_PREFIX)) normalized[key] = null;
