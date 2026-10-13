@@ -51,6 +51,17 @@ function unstableRandom() {
   return randomPart;
 }
 
+// Zen validates the session prefix as a fresh descending wall-clock timestamp
+// (probed 2026-10-13: hash-derived or far-future/past prefixes → 403 FreeTierError).
+export function descendingPrefix(timestamp = Date.now()) {
+  const value = ~(BigInt(timestamp) * 0x1000n + 1n);
+  return Array.from({ length: 6 }, (_, index) =>
+    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
+      .toString(16)
+      .padStart(2, "0")
+  ).join("");
+}
+
 export function generateSessionId(timestamp = Date.now()) {
   if (timestamp !== lastTimestamp) {
     lastTimestamp = timestamp;
@@ -87,12 +98,11 @@ export function translateSessionId(sessionId, clientTool = "") {
     .createHash("sha256")
     .update(`opencode\0${clientTool || "generic"}\0${sessionId || ""}`)
     .digest();
-  const timeHex = digest.subarray(0, 6).toString("hex");
   let randomPart = "";
   for (let i = 6; i < 20; i++) {
     randomPart += BASE62_CHARS[digest[i] % 62];
   }
-  return `ses_${timeHex}${randomPart}`;
+  return `ses_${descendingPrefix()}${randomPart}`;
 }
 
 function normalizeSession(value) {
@@ -120,6 +130,9 @@ function nativeSession(headers) {
 // that: one stable canonical session per downstream identity, evicted
 // after MEMORY_CONFIG.sessionTtlMs like the other session stores.
 const stableOpencodeSessions = new Map();
+// Zen accepts session prefixes at least 7d old (probed 2026-10-13); rotate
+// well inside that so a long-lived identity never ages out of the window.
+const STABLE_SESSION_MAX_AGE_MS = 6 * 24 * 60 * 60 * 1000;
 const MAX_STABLE_SESSIONS = 1000;
 const stableSessionCleanup = setInterval(() => {
   const now = Date.now();
@@ -146,7 +159,9 @@ function identityKey(credentials) {
 export function stableSessionId(credentials) {
   const key = identityKey(credentials);
   const existing = stableOpencodeSessions.get(key);
-  if (existing) {
+  // Zen rejects sessions whose descending-timestamp prefix is too old
+  // (probed 2026-10-13: 7d OK, hash-derived prefixes 403) — rotate past the window.
+  if (existing && Date.now() - existing.createdAt < STABLE_SESSION_MAX_AGE_MS) {
     existing.lastUsed = Date.now();
     stableOpencodeSessions.delete(key);
     stableOpencodeSessions.set(key, existing);
@@ -156,7 +171,7 @@ export function stableSessionId(credentials) {
   if (stableOpencodeSessions.size >= MAX_STABLE_SESSIONS) {
     stableOpencodeSessions.delete(stableOpencodeSessions.keys().next().value);
   }
-  stableOpencodeSessions.set(key, { sessionId, lastUsed: Date.now() });
+  stableOpencodeSessions.set(key, { sessionId, createdAt: Date.now(), lastUsed: Date.now() });
   return sessionId;
 }
 

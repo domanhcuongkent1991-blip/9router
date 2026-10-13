@@ -346,3 +346,42 @@ describe("OpenCode Stable Session Reuse (429 follow-up)", () => {
     expect(PROVIDERS.opencode?.forceStream).toBe(true);
   });
 });
+
+describe("OpenCode session prefix freshness (Zen 403 FreeTierError guard)", () => {
+  // Zen validates the 12-hex prefix as a descending wall-clock timestamp;
+  // hash-derived prefixes (2026-10-13 break) were rejected with 403.
+  // The prefix holds only the low 48 bits of ~(ts*4096+counter), so decode the
+  // wrapped counter and measure signed distance to the current wrapped counter.
+  function prefixAgeMs(sessionId) {
+    const hex = sessionId.slice(4, 16);
+    let value = 0n;
+    for (let i = 0; i < 6; i++) value = (value << 8n) | BigInt(parseInt(hex.slice(i * 2, i * 2 + 2), 16));
+    const MOD = 1n << 48n;
+    const counter = (MOD - value - 1n) % MOD;
+    const nowCounter = (BigInt(Date.now()) * 0x1000n + 1n) % MOD;
+    let diff = (nowCounter - counter) % MOD;
+    if (diff > MOD / 2n) diff -= MOD;
+    return Number(diff / 0x1000n);
+  }
+
+  it("translateSessionId emits a fresh descending-timestamp prefix", () => {
+    const id = translateSessionId("foreign-session-id", "claude");
+    expect(id).toMatch(OPENCODE_SESSION_RE);
+    const age = prefixAgeMs(id);
+    expect(age).toBeGreaterThan(-60_000);
+    expect(age).toBeLessThan(60_000);
+  });
+
+  it("stableSessionId emits a fresh descending-timestamp prefix", () => {
+    const id = stableSessionId({ connectionId: "fresh-prefix-conn" });
+    expect(id).toMatch(OPENCODE_SESSION_RE);
+    const age = prefixAgeMs(id);
+    expect(age).toBeGreaterThan(-60_000);
+    expect(age).toBeLessThan(60_000);
+  });
+
+  it("keeps a valid canonical session untouched", () => {
+    const valid = generateSessionId();
+    expect(translateSessionId(valid)).toBe(valid);
+  });
+});

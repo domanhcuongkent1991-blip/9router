@@ -15,6 +15,7 @@ import { getThinkingLevels } from "../providers/thinkingLevels.js";
 const SESSION_HEADER = "x-opencode-session";
 const SESSION_FIELD = "_opencodeGoSession";
 const MAX_SESSION_LENGTH = 256;
+const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 const RESPONSES_BASE_URL = "https://opencode.ai/zen/go/v1/responses";
 const MAX_TOOL_NAME_LEN = 128;
@@ -38,9 +39,20 @@ function translatedSession(sessionId, clientTool) {
   const digest = crypto
     .createHash("sha256")
     .update(`opencode-go\0${clientTool || "generic"}\0${sessionId}`)
-    .digest("hex")
-    .slice(0, 32);
-  return `ses_${digest}`;
+    .digest();
+  let randomPart = "";
+  for (let i = 6; i < 20; i++) {
+    randomPart += BASE62_CHARS[digest[i] % 62];
+  }
+  // Zen validates the prefix as a fresh descending timestamp (probed 2026-10-13:
+  // hash-derived prefixes → 403 FreeTierError).
+  const value = ~(BigInt(Date.now()) * 0x1000n + 1n);
+  const timeHex = Array.from({ length: 6 }, (_, index) =>
+    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
+      .toString(16)
+      .padStart(2, "0")
+  ).join("");
+  return `ses_${timeHex}${randomPart}`;
 }
 
 // Responses-only per the provider registry (grok-4.6, gpt-5.6-luna, muse-spark, …),

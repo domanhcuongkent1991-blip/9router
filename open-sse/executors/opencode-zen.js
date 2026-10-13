@@ -70,11 +70,18 @@ export function translateSessionId(sessionId, clientTool = "") {
     .createHash("sha256")
     .update(`opencode\0${clientTool || "generic"}\0${sessionId || ""}`)
     .digest();
-  const timeHex = digest.subarray(0, 6).toString("hex");
   let randomPart = "";
   for (let i = 6; i < 20; i++) {
     randomPart += BASE62_CHARS[digest[i] % 62];
   }
+  // Zen validates the prefix as a fresh descending timestamp (probed 2026-10-13:
+  // hash-derived prefixes → 403 FreeTierError).
+  const value = ~(BigInt(Date.now()) * 0x1000n + 1n);
+  const timeHex = Array.from({ length: 6 }, (_, index) =>
+    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
+      .toString(16)
+      .padStart(2, "0")
+  ).join("");
   return `ses_${timeHex}${randomPart}`;
 }
 
