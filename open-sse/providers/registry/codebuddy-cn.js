@@ -43,6 +43,11 @@ export default {
     usage: {
       url: "https://copilot.tencent.com/v2/billing/meter/get-user-resource",
     },
+    // Hy3 / Step-5 reject bodies whose first message is not a system prompt
+    // (400 code 11128, probed 2026-10-13 on the intl twin).
+    quirks: {
+      requireLeadingSystemPromptModels: ["hy3", "step-5-preview"],
+    },
   },
   models: [
     { id: "glm-5.2", name: "GLM-5.2" },
@@ -63,6 +68,10 @@ export default {
     // "-x" suffix = paid tier of the same model (free id rides the promo quota).
     { id: "hy3", name: "Hy3" },
     { id: "hy4-preview", name: "Hy4-Preview" },
+    // Published by the CN product config (WorkBuddy desktop lists it as a free
+    // model and sends this exact id; sessions table, 2026-10-13) though absent
+    // from the intl personal-models catalog.
+    { id: "step-5-preview", name: "Step-5-Preview" },
     { id: "glm-5.3", name: "GLM-5.3" },
     { id: "glm-5.3-flash", name: "GLM-5.3-Flash" },
     { id: "kimi-k3-1", name: "Kimi-K3" },

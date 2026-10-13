@@ -42,6 +42,12 @@ export default {
     usage: {
       url: "https://www.codebuddy.ai/v2/billing/meter/get-user-resource",
     },
+    // Hy3 / Step-5 reject bodies whose first message is not a system prompt
+    // (400 code 11128, probed 2026-10-13); both ride the free quota (0 credits
+    // consumed per billing meter).
+    quirks: {
+      requireLeadingSystemPromptModels: ["hy3", "step-5-preview"],
+    },
   },
   // Same model lineup exposed by the CN gateway — intl backend is the same catalog.
   models: [
@@ -56,7 +62,11 @@ export default {
     { id: "kimi-k2.7", name: "Kimi-K2.7-Code" },
     { id: "kimi-k2.6", name: "Kimi-K2.6" },
     { id: "kimi-k2.5", name: "Kimi-K2.5" },
-    { id: "hy3-preview", name: "Hy3 Preview" },
+    // Backend catalog id is "hy3" (probed 2026-10-13: "hy3-preview" → 400 11102).
+    { id: "hy3", name: "Hy3" },
+    // Not in the published catalog but the chat endpoint serves it (200, free
+    // quota) — same id WorkBuddy desktop sends (sessions table, 2026-10-13).
+    { id: "step-5-preview", name: "Step-5-Preview" },
     { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
     // deepseek-v4-flash replaced server-side by deepseek-v4.1-flash (same
     // catalog as CN; the old endpoint still answers 200 but the list is the contract).

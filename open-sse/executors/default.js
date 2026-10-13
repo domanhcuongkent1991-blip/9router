@@ -88,6 +88,9 @@ export class DefaultExecutor extends BaseExecutor {
       if (this.config.quirks?.dropClientMetadata) {
         delete transformed.client_metadata;
       }
+      if (this.config.quirks?.requireLeadingSystemPromptModels?.includes(model)) {
+        transformed.messages = this.ensureLeadingSystemPrompt(transformed.messages);
+      }
       stripUnsupportedParams(this.provider, model, transformed);
     }
 
@@ -112,6 +115,14 @@ export class DefaultExecutor extends BaseExecutor {
       messages.unshift({ role: "system", content: prompt });
     }
     return { ...body, messages, response_format: { type: "json_object" } };
+  }
+
+  // Quirk: CodeBuddy Hy3 / Step-5 reject bodies whose first message is not a
+  // system prompt (400 code 11128). Prepend a neutral one when missing.
+  ensureLeadingSystemPrompt(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return messages;
+    if (messages[0]?.role === "system") return messages;
+    return [{ role: "system", content: "You are a helpful assistant." }, ...messages];
   }
 
   buildUrl(model, stream, urlIndex = 0, credentials = null) {
