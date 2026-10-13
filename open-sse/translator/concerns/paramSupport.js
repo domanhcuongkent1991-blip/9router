@@ -21,6 +21,11 @@ const STRIP_RULES = [
   // "integer above maximum value, expected <= 32768". Pin an explicit endpoint cap;
   // min() with the model ceiling still applies if a variant's own limit is lower.
   { provider: "volcengine-ark", match: /kimi/i, maxOutputCap: 32768, clampToModelMaxOutput: true },
+  // Cline free-tier variants route to OpenRouter, whose max_completion_tokens
+  // ceiling (e.g. 131072 for xiaomi/mimo-v2.6-flash) is far below what clients
+  // derive from the 1M context window — a client-sent max_tokens=903099 400s.
+  // Clamp to the model's declared maxOutput so the request stays under upstream.
+  { provider: "cline", clampToModelMaxOutput: true },
   // Strict OpenAI-compatible validators reject unknown assistant-message fields.
   // Clients that talk to reasoning models (e.g. Hermes) echo the prior turn's
   // reasoning back on every assistant message; Groq answers 400 and Mistral 422

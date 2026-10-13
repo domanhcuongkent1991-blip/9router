@@ -10,6 +10,7 @@ import {
   coerceResponsesOutput,
 } from "../translator/formats/responsesApi.js";
 import { clampToolNamesForUpstream } from "../utils/opencodeFingerprint.js";
+import { getThinkingLevels } from "../providers/thinkingLevels.js";
 
 const SESSION_HEADER = "x-opencode-session";
 const SESSION_FIELD = "_opencodeGoSession";
@@ -179,6 +180,17 @@ export class OpenCodeGoExecutor extends DefaultExecutor {
     }
     if (out.reasoning && typeof out.reasoning === "object" && !Array.isArray(out.reasoning)) {
       if (!out.reasoning.summary) out.reasoning.summary = "auto";
+      // Native Responses clients skip translation, so thinkingUnified's clamp
+      // never runs here: mirror normalizeOpencodeReasoning's effort clamping.
+      const effort = typeof out.reasoning.effort === "string" ? out.reasoning.effort.toLowerCase().trim() : null;
+      if (effort) {
+        const supported = getThinkingLevels("opencode-go", model || body?.model || out.model);
+        if (supported?.length && !supported.includes(effort)) {
+          if (effort === "ultra" && supported.includes("max")) out.reasoning.effort = "max";
+          else if (effort === "max" && supported.includes("xhigh")) out.reasoning.effort = "xhigh";
+          else if (effort === "none") out.reasoning.effort = supported[0]; // always-thinking model
+        }
+      }
     }
     delete out.reasoning_effort;
     out.stream = true;

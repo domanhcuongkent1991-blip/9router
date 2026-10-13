@@ -82,6 +82,10 @@ const PATTERN_THINKING = [
   { provider: "minimax-code", pattern: "MiniMax-M3", levels: ["none", "high"] },
   { provider: "minimax-code-global", pattern: "MiniMax-M3.1*", levels: ["low", "medium", "high", "xhigh", "max"] },
   { provider: "minimax-code-global", pattern: "MiniMax-M3", levels: ["none", "high"] },
+  // OpenCode Free muse-spark — always-thinking: upstream 400s on effort "none"
+  // ("Supported values: [minimal, low, medium, high, xhigh, max]"). No provider
+  // qualifier: the same gateway serves the opencode and opencode-go executors.
+  { pattern: "*muse*spark*", levels: ["minimal", "low", "medium", "high", "xhigh", "max"] },
 ];
 
 // Returns valid thinking levels for a model, or null when the model has no reasoning.

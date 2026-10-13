@@ -14,6 +14,16 @@ const CREDS = { connectionId: "opencode-free-tool-choice-test" };
 const INPUT = [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }];
 const TOOLS = [{ type: "function", name: "get_weather", description: "w", parameters: { type: "object", properties: {} } }];
 
+// Free-tier fingerprint cloaking (822aa958) luôn append đủ quartet
+// bash/glob/grep/read vào tools, nên test khẳng định tool_choice và tính
+// nguyên vẹn của tool người gọi (không so cả mảng đầy đủ).
+const QUARTET = ["bash", "glob", "grep", "read"];
+function expectToolsPreserved(tools) {
+  const names = tools.map((t) => t.name ?? t.function?.name);
+  expect(names).toContain("get_weather");
+  for (const q of QUARTET) expect(names).toContain(q);
+}
+
 function responsesBody(model, tool_choice) {
   const body = { model, input: structuredClone(INPUT), tools: structuredClone(TOOLS) };
   if (tool_choice !== undefined) body.tool_choice = tool_choice;
@@ -36,7 +46,7 @@ describe("opencode Free 1.3 tool_choice auto-only", () => {
       const body = responsesBody(model, structuredClone(choice));
       const out = new OpenCodeExecutor().transformRequest(model, body, true, CREDS);
       expect(out.tool_choice).toBe("auto");
-      expect(out.tools).toEqual(TOOLS);
+      expectToolsPreserved(out.tools);
       expect(out.input).toEqual(INPUT);
     }
   });
@@ -46,14 +56,16 @@ describe("opencode Free 1.3 tool_choice auto-only", () => {
       FREE_13, responsesBody(FREE_13, "auto"), true, CREDS,
     );
     expect(autoOut.tool_choice).toBe("auto");
-    expect(autoOut.tools).toEqual(TOOLS);
+    expectToolsPreserved(autoOut.tools);
     expect(autoOut.input).toEqual(INPUT);
 
     const absentOut = new OpenCodeExecutor().transformRequest(
       FREE_13, responsesBody(FREE_13, undefined), true, CREDS,
     );
-    expect("tool_choice" in absentOut).toBe(false);
-    expect(absentOut.tools).toEqual(TOOLS);
+    // Fingerprint pass đặt legacy default "auto" cho free model khi caller
+    // không gửi tool_choice — upstream FreeTierError nếu thiếu.
+    expect(absentOut.tool_choice).toBe("auto");
+    expectToolsPreserved(absentOut.tools);
     expect(absentOut.input).toEqual(INPUT);
   });
 
@@ -84,7 +96,7 @@ describe("opencode Free 1.3 tool_choice auto-only", () => {
     const sent = JSON.parse(actualInit.body);
     expect(sent.tool_choice).toBe("auto");
     expect(sent.model).toBe(FREE_13);
-    expect(sent.tools).toEqual(TOOLS);
+    expectToolsPreserved(sent.tools);
     expect(sent.input).toEqual(INPUT);
   });
 });

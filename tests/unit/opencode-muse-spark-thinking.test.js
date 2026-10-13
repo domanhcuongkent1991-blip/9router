@@ -32,13 +32,15 @@ describe("OpenCode Free Muse Spark thinking", () => {
         contextWindow: 1048576,
         maxOutput: 131072,
       });
+      // Probed: upstream supports [minimal, low, medium, high, xhigh, max] and
+      // 400s on effort "none" (always-thinking, cannot disable).
       expect(getThinkingLevels(PROVIDER, m)).toEqual([
-        "none",
         "minimal",
         "low",
         "medium",
         "high",
         "xhigh",
+        "max",
       ]);
       expect(getModelTargetFormat("oc", m)).toBe(FORMATS.OPENAI_RESPONSES);
       expect(getModelTargetFormat("opencode", m)).toBe(FORMATS.OPENAI_RESPONSES);
@@ -46,7 +48,7 @@ describe("OpenCode Free Muse Spark thinking", () => {
     }
   });
 
-  it("clamps max to xhigh and emits the Responses reasoning shape", () => {
+  it("passes max through and emits the Responses reasoning shape", () => {
     const body = {
       input,
       reasoning: { effort: "max" },
@@ -57,7 +59,7 @@ describe("OpenCode Free Muse Spark thinking", () => {
       connectionId: "opencode-muse-spark-test",
     });
 
-    expect(out.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+    expect(out.reasoning).toEqual({ effort: "max", summary: "auto" });
     expect(out.reasoning_effort).toBeUndefined();
     expect(out.max_output_tokens).toBe(131072);
     expect(out.max_tokens).toBeUndefined();
@@ -126,7 +128,7 @@ describe("OpenCode Free Muse Spark thinking", () => {
       connectionId: "opencode-muse-spark-translation-test",
     });
 
-    expect(out.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+    expect(out.reasoning).toEqual({ effort: "max", summary: "auto" });
     expect(out.max_output_tokens).toBe(131072);
     expect(out.max_tokens).toBeUndefined();
   });
@@ -214,14 +216,14 @@ describe("OpenCode Free Muse Spark thinking", () => {
     // User message, function_call, function_call_output, and next user message survive
     const types = out.input.map((item) => item.type);
     expect(types).toEqual(["message", "function_call", "function_call_output", "message"]);
-    // Tools flattened and empty properties added
-    expect(out.tools).toEqual([
-      {
-        type: "function",
-        name: "shell",
-        description: "Run shell command",
-        parameters: { type: "object", properties: {} },
-      },
-    ]);
+    // Tools flattened and empty properties added; decoy cloaking tools
+    // (822aa958) are appended after the real tools
+    expect(out.tools.length).toBeGreaterThanOrEqual(2);
+    expect(out.tools[0]).toEqual({
+      type: "function",
+      name: "shell",
+      description: "Run shell command",
+      parameters: { type: "object", properties: {} },
+    });
   });
 });

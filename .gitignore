@@ -85,6 +85,7 @@ graphify-out/*
 .repo/
 .script/
 .codegraph/
+codegraph.json
 .PR/
 .next-analyze/*
 

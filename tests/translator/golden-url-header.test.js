@@ -23,7 +23,8 @@ const SPECIALIZED = new Set([
   "xiaomi-tokenplan", "mimo-free",
 ]);
 
-// Sanitize header: khử token + field thời gian động (kimi X-Msh-Device-Id) để snapshot ổn định.
+// Sanitize header: khử token + field thời gian động (kimi X-Msh-Device-Id) + version UA động
+// (claude-cli/2.1.280, grok-shell/1.0.44, ...) để snapshot không trôi theo version executor.
 function sanitize(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers)) {
@@ -31,7 +32,10 @@ function sanitize(headers) {
       ? v.replace(/Bearer .+/, "Bearer <TOK>")
           .replace(/sk-test-APIKEY|tok-test-ACCESS/g, "<CRED>")
           .replace(/kimi-\d{10,}/g, "kimi-<TS>")
+          .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<UUID>")
+          .replace(/(claude-cli|grok-shell|cline|kimi-cli|minimax-code|minimax-m2|vscode|opencode)\/[\d.]+/g, "$1/<VER>")
       : v;
+    if (typeof out[k] === "string" && /^x-grok-client-version$/.test(k)) out[k] = "<VER>";
   }
   return out;
 }

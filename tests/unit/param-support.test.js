@@ -53,6 +53,26 @@ describe("stripUnsupportedParams", () => {
     expect(body.max_tokens).toBe(64000);
   });
 
+  it("clamps Cline free-tier max token fields to the model output ceiling", () => {
+    // Real-world failure: client derived max_tokens from the 1M context window
+    // (1048576 - 145477 = 903099) and OpenRouter 400'd — the variant's actual
+    // max_completion_tokens is 131072.
+    const body = { max_tokens: 903099, temperature: 0.7 };
+
+    stripUnsupportedParams("cline", "cline-free/mimo-v2.6-flash", body);
+
+    expect(body.max_tokens).toBe(131072);
+    expect(body.temperature).toBe(0.7);
+  });
+
+  it("keeps Cline max tokens when already under the ceiling", () => {
+    const body = { max_tokens: 64000 };
+
+    stripUnsupportedParams("cline", "cline-free/mimo-v2.6-flash", body);
+
+    expect(body.max_tokens).toBe(64000);
+  });
+
   it("drops replayed reasoning fields from assistant messages for strict providers", () => {
     const makeBody = () => ({
       messages: [

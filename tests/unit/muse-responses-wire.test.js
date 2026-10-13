@@ -64,10 +64,10 @@ describe("Muse Responses thinking wire shape", () => {
     expect(body.reasoning_effort).toBeUndefined();
   });
 
-  it("clamps max to xhigh for the Responses wire", () => {
+  it("passes max through for the Responses wire (probed upstream supports max)", () => {
     const body = { input: [] };
     applyThinking(FORMATS.OPENAI_RESPONSES, "muse-spark-1.3", body, "muse", { mode: "level", level: "max" });
-    expect(body.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+    expect(body.reasoning).toEqual({ effort: "max", summary: "auto" });
     expect(body.reasoning_effort).toBeUndefined();
   });
 
