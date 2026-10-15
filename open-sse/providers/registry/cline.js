@@ -65,5 +65,10 @@ export default {
     authorizeUrl: "https://api.cline.bot/api/v1/auth/authorize",
     tokenExchangeUrl: "https://api.cline.bot/api/v1/auth/token",
     refreshUrl: "https://api.cline.bot/api/v1/auth/refresh",
+    // Cline free soft-blocks accounts that rotate tokens too often (401
+    // "re-authenticate" on otherwise valid JWTs) — refresh only when the
+    // token is actually near expiry (~5 min lead on a ~55 min token).
+    refreshLeadMs: 5 * 60 * 1000,
+    backgroundRefreshLeadMs: 5 * 60 * 1000,
   },
 };

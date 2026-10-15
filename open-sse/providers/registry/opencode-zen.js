@@ -116,7 +116,6 @@ export default {
     { id: "muse-spark-1.2-contributor-free", name: "Muse Spark 1.2 Contributor Free", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     // System One (Jev) decision models on the native /systemone endpoint
     { id: "jev-1.13", name: "Jev 1.13", kind: "systemone" },
-    { id: "jev-1.13-free", name: "Jev 1.13 Free", kind: "systemone" },
   ],
   serviceKinds: ["llm", "systemone"],
   systemoneConfig: {

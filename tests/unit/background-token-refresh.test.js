@@ -90,6 +90,54 @@ describe("selectConnectionsNeedingRefresh", () => {
     );
     expect(list).toHaveLength(1);
   });
+
+  it("cline: skips token expiring in 25 min despite 30-min default floor", async () => {
+    const { selectConnectionsNeedingRefresh } = await import(
+      "../../src/sse/services/backgroundTokenRefresh.js"
+    );
+    const list = selectConnectionsNeedingRefresh(
+      [
+        conn({
+          provider: "cline",
+          expiresAt: new Date(NOW + 25 * 60 * 1000).toISOString(),
+        }),
+      ],
+      NOW
+    );
+    expect(list).toHaveLength(0);
+  });
+
+  it("cline: still selects token expiring within 5-min provider lead", async () => {
+    const { selectConnectionsNeedingRefresh } = await import(
+      "../../src/sse/services/backgroundTokenRefresh.js"
+    );
+    const list = selectConnectionsNeedingRefresh(
+      [
+        conn({
+          provider: "cline",
+          expiresAt: new Date(NOW + 3 * 60 * 1000).toISOString(),
+        }),
+      ],
+      NOW
+    );
+    expect(list).toHaveLength(1);
+  });
+
+  it("non-cline providers keep the 30-min background floor", async () => {
+    const { selectConnectionsNeedingRefresh } = await import(
+      "../../src/sse/services/backgroundTokenRefresh.js"
+    );
+    const list = selectConnectionsNeedingRefresh(
+      [
+        conn({
+          provider: "grok-cli",
+          expiresAt: new Date(NOW + 25 * 60 * 1000).toISOString(),
+        }),
+      ],
+      NOW
+    );
+    expect(list).toHaveLength(1);
+  });
 });
 
 describe("runBackgroundTokenRefreshTick", () => {

@@ -16,6 +16,9 @@ export const OPENCODE_FINGERPRINT_TOOLS = ["bash", "glob", "grep", "read"];
 // mapping request-local without putting transport metadata on the wire.
 const renamedToolNames = new WeakMap();
 
+import { GENUINE_TOOL_DESCRIPTIONS } from "./opencodeGenuineDescriptions.js";
+import { GENUINE_TOOL_PARAMETERS } from "./opencodeGenuineParameters.js";
+
 /** Canonical lowercase name when `name` is a quartet member; "" otherwise. */
 export function fingerprintToolKey(name) {
   const lower = String(name ?? "").trim().toLowerCase();
@@ -81,19 +84,25 @@ export function concealFingerprintToolNames(tools) {
 /** Append only genuinely missing quartet declarations. */
 export function appendMissingFingerprintTools(tools, flat) {
   const list = Array.isArray(tools) ? tools : [];
+  // Descriptions AND parameter schemas must be the VERBATIM genuine OpenCode client
+  // text: upstream's free-tier gate matches each tool's name+description+parameters
+  // against the real toolset and rejects placeholders, shortened text, paraphrases,
+  // or empty stub parameters — even a single-char change (probed 2026-10-15).
   for (const name of OPENCODE_FINGERPRINT_TOOLS) {
     if (list.some((tool) => fingerprintToolKey(toolNameOf(tool)) === name)) continue;
+    const description = GENUINE_TOOL_DESCRIPTIONS[name] || "Read a file or directory from the local filesystem.";
+    const parameters = GENUINE_TOOL_PARAMETERS[name] || { type: "object", properties: {} };
     list.push(flat ? {
       type: "function",
       name,
-      description: "This tool is currently unavailable and must not be used.",
-      parameters: { type: "object", properties: {} },
+      description,
+      parameters,
     } : {
       type: "function",
       function: {
         name,
-        description: "This tool is currently unavailable and must not be used.",
-        parameters: { type: "object", properties: {} },
+        description,
+        parameters,
       },
     });
   }

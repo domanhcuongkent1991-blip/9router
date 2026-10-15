@@ -32,7 +32,7 @@ function hasValidOpencodeVersion(ua) {
   const minor = parseInt(m[2], 10);
   return major > 1 || (major === 1 && minor >= 17);
 }
-// Models served by /zen/v1/responses; every other model stays on /chat/completions.
+// Models served by /inference/v1/responses; every other model stays on /chat/completions.
 const RESPONSES_MODELS = new Set([
   "muse-spark-1.2-contributor-free",
   "muse-spark-1.3-contributor-free",
@@ -476,9 +476,11 @@ export class OpenCodeExecutor extends BaseExecutor {
 
   buildUrl(model) {
     const base = this.config.baseUrl;
-    if (isResponsesModel(model)) return `${base}/zen/v1/responses`;
-    if (isMessagesModel(model)) return `${base}/zen/v1/messages`;
-    return `${base}/zen/v1/chat/completions`;
+    // 2026-10-15: free tier moved /zen/v1 → /inference/v1 (zen path now always 403 FreeTierError);
+    // client 1.19.0+ catalogs https://opencode.ai/inference/v1 via models.opencode.ai/api.json.
+    if (isResponsesModel(model)) return `${base}/inference/v1/responses`;
+    if (isMessagesModel(model)) return `${base}/inference/v1/messages`;
+    return `${base}/inference/v1/chat/completions`;
   }
 
   buildHeaders(credentials, stream = true, url = "") {
@@ -499,6 +501,7 @@ export class OpenCodeExecutor extends BaseExecutor {
       "User-Agent": isOpencodeDownstream ? downstreamUa : OPENCODE_UA,
       "x-opencode-client": lower["x-opencode-client"] || "desktop",
       "x-opencode-session": session,
+      "x-opencode-session-id": session,
       "x-opencode-request": requestId,
       "x-opencode-project": lower["x-opencode-project"] || "global",
       "Accept": stream ? "text/event-stream" : "*/*",

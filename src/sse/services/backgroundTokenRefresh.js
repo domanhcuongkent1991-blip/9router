@@ -4,6 +4,7 @@
 import * as log from "../utils/logger.js";
 import { getRefreshLeadMs } from "open-sse/services/tokenRefresh.js";
 import { getCredentialExpiryMs } from "open-sse/services/oauthCredentialManager.js";
+import { PROVIDER_OAUTH } from "open-sse/providers/index.js";
 
 /** Refresh when expiry is within 30 minutes (or the provider on-request lead, whichever larger). */
 export const BACKGROUND_REFRESH_LEAD_MS = 30 * 60 * 1000;
@@ -39,7 +40,10 @@ function isNonServerRuntime() {
 
 /**
  * Pure selection: OAuth connections with a refreshToken whose access token
- * expires within max(provider on-request lead, BACKGROUND_REFRESH_LEAD_MS).
+ * expires within max(provider on-request lead, BACKGROUND_REFRESH_LEAD_MS),
+ * unless the provider opts out of the 30-min floor via
+ * oauth.backgroundRefreshLeadMs (providers whose upstream penalizes frequent
+ * token rotation, e.g. cline free soft-blocking refreshed tokens).
  *
  * @param {Array<object>} connections
  * @param {number} [nowMs]
@@ -60,9 +64,11 @@ export function selectConnectionsNeedingRefresh(connections, nowMs = Date.now())
     if (expiresAtMs === null) continue;
 
     const providerLead = getRefreshLeadMs(conn.provider);
+    const bgLeadOverride = PROVIDER_OAUTH[conn.provider]?.backgroundRefreshLeadMs;
+    const bgLead = Number.isFinite(bgLeadOverride) ? bgLeadOverride : BACKGROUND_REFRESH_LEAD_MS;
     const leadMs = Math.max(
       Number.isFinite(providerLead) ? providerLead : 0,
-      BACKGROUND_REFRESH_LEAD_MS
+      bgLead
     );
 
     if (expiresAtMs - nowMs < leadMs) {
