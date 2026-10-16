@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PROVIDERS } from "../../open-sse/config/providers.js";
 import { OpenCodeExecutor } from "../../open-sse/executors/opencode.js";
 import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
+import { OPENCODE_FINGERPRINT_TOOLS } from "../../open-sse/utils/opencodeFingerprint.js";
 
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
   proxyAwareFetch: vi.fn(async () => ({ ok: true, status: 200, headers: { get: () => "" } })),
@@ -13,16 +14,12 @@ const FREE_13 = "muse-spark-1.3-contributor-free";
 const CREDS = { connectionId: "opencode-free-tool-choice-test" };
 const INPUT = [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }];
 const TOOLS = [{ type: "function", name: "get_weather", description: "w", parameters: { type: "object", properties: {} } }];
+// Free-tier gate: client tools pass through verbatim, then the fingerprint
+// read/shell definitions are appended or upstream answers 403 FreeTierError.
+const WIRE_TOOLS = [...TOOLS, ...OPENCODE_FINGERPRINT_TOOLS.map((name) => expect.objectContaining({ type: "function", name }))];
 
-// Free-tier fingerprint cloaking (822aa958) luôn append đủ quartet
-// bash/glob/grep/read vào tools, nên test khẳng định tool_choice và tính
-// nguyên vẹn của tool người gọi (không so cả mảng đầy đủ).
-const QUARTET = ["bash", "glob", "grep", "read"];
-function expectToolsPreserved(tools) {
-  const names = tools.map((t) => t.name ?? t.function?.name);
-  expect(names).toContain("get_weather");
-  for (const q of QUARTET) expect(names).toContain(q);
-}
+// Free-tier fingerprint v2 (read/shell, upstream #4842): client tools pass
+// through verbatim, then the fingerprint definitions are appended.
 
 function responsesBody(model, tool_choice) {
   const body = { model, input: structuredClone(INPUT), tools: structuredClone(TOOLS) };
@@ -46,7 +43,7 @@ describe("opencode Free 1.3 tool_choice auto-only", () => {
       const body = responsesBody(model, structuredClone(choice));
       const out = new OpenCodeExecutor().transformRequest(model, body, true, CREDS);
       expect(out.tool_choice).toBe("auto");
-      expectToolsPreserved(out.tools);
+      expect(out.tools).toEqual(WIRE_TOOLS);
       expect(out.input).toEqual(INPUT);
     }
   });
@@ -56,16 +53,15 @@ describe("opencode Free 1.3 tool_choice auto-only", () => {
       FREE_13, responsesBody(FREE_13, "auto"), true, CREDS,
     );
     expect(autoOut.tool_choice).toBe("auto");
-    expectToolsPreserved(autoOut.tools);
+    expect(autoOut.tools).toEqual(WIRE_TOOLS);
     expect(autoOut.input).toEqual(INPUT);
 
     const absentOut = new OpenCodeExecutor().transformRequest(
       FREE_13, responsesBody(FREE_13, undefined), true, CREDS,
     );
-    // Fingerprint pass đặt legacy default "auto" cho free model khi caller
-    // không gửi tool_choice — upstream FreeTierError nếu thiếu.
+    // Fingerprint pass fills an absent choice with "auto" (the API default once tools exist).
     expect(absentOut.tool_choice).toBe("auto");
-    expectToolsPreserved(absentOut.tools);
+    expect(absentOut.tools).toEqual(WIRE_TOOLS);
     expect(absentOut.input).toEqual(INPUT);
   });
 
@@ -96,7 +92,7 @@ describe("opencode Free 1.3 tool_choice auto-only", () => {
     const sent = JSON.parse(actualInit.body);
     expect(sent.tool_choice).toBe("auto");
     expect(sent.model).toBe(FREE_13);
-    expectToolsPreserved(sent.tools);
+    expect(sent.tools).toEqual(WIRE_TOOLS);
     expect(sent.input).toEqual(INPUT);
   });
 });

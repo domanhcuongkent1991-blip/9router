@@ -39,8 +39,11 @@ describe("oc executor — tool names longer than 64 are aliased for opencode ups
     const callItem = out.input.find((i) => i.type === "function_call");
     expect(callItem.name).toBe(target.name);
 
-    // restore map: alias -> original
-    const map = takeRenamedToolNames(out);
+    // restore map: alias -> original. The map is keyed on the ORIGINAL body
+    // (chatCore reads it via takeRenamedToolNames(translatedBody)); upstream's
+    // reasoningInject returns a new object from transformRequest, so `out`
+    // is not the map key.
+    const map = takeRenamedToolNames(body);
     expect(map).toBeTruthy();
     expect(map.get(target.name)).toBe(NAME65);
   });
@@ -58,7 +61,8 @@ tool_choice: { type: "function", function: { name: NAME65 } },
     const target = tools.find((t) => t?.function?.name && t.function.name !== "bash" && t.function.name !== "glob" && t.function.name !== "grep" && t.function.name !== "read");
     expect(target).toBeTruthy();
     expect(target.function.name.length).toBeLessThanOrEqual(64);
-    const map = takeRenamedToolNames(out);
+    // Map keyed on the original body (see responses-path comment above).
+    const map = takeRenamedToolNames(body);
     expect(map?.get(target.function.name)).toBe(NAME65);
   });
 
@@ -74,7 +78,7 @@ tool_choice: { type: "function", function: { name: NAME65 } },
     const out = executor.transformRequest(body.model, body, true, {});
     const target = (out.tools || []).find((t) => t?.name === NAME64);
     expect(target).toBeTruthy();
-    expect(takeRenamedToolNames(out)?.size || 0).toBe(0);
+    expect(takeRenamedToolNames(body)?.size || 0).toBe(0);
   });
 });
 

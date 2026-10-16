@@ -216,14 +216,18 @@ describe("OpenCode Free Muse Spark thinking", () => {
     // User message, function_call, function_call_output, and next user message survive
     const types = out.input.map((item) => item.type);
     expect(types).toEqual(["message", "function_call", "function_call_output", "message"]);
-    // Tools flattened and empty properties added; decoy cloaking tools
-    // (822aa958) are appended after the real tools
-    expect(out.tools.length).toBeGreaterThanOrEqual(2);
-    expect(out.tools[0]).toEqual({
-      type: "function",
-      name: "shell",
-      description: "Run shell command",
-      parameters: { type: "object", properties: {} },
-    });
+    // Tools flattened and empty properties added. The caller's own `shell` clashes
+    // with OpenCode's fingerprint tool, so it (and its prior call) travel under an
+    // alias while the exact read/shell definitions are appended.
+    expect(out.tools.slice(0, 1)).toEqual([
+      {
+        type: "function",
+        name: "shell_client",
+        description: "Run shell command",
+        parameters: { type: "object", properties: {} },
+      },
+    ]);
+    expect(out.tools.map((t) => t.name)).toEqual(["shell_client", "read", "shell"]);
+    expect(out.input.find((item) => item.type === "function_call").name).toBe("shell_client");
   });
 });
