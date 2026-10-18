@@ -5,6 +5,10 @@ import { fileURLToPath } from "url";
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
+  // Keep the transform cache outside node_modules: files created there by a
+  // sandboxed user get an ACL that blocks `npm ci`'s pre-clean (EBUSY/EPERM)
+  // and any later deletion without elevated rights.
+  cacheDir: resolve(__dirname, "../.cache/vitest"),
   test: {
     environment: "node",
     globals: true,

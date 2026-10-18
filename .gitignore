@@ -95,6 +95,7 @@ codegraph.json
 
 # Local sensitive / temp files
 .engine-token.txt
+.cache/
 .tmp-prov.json
 .tmp-providers.json
 .oauth-session.json
