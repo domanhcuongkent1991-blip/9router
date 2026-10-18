@@ -26,10 +26,18 @@ export default {
     // CodeBuddy intl speaks the same unified OpenAI reasoning_effort shape as CN.
     thinkingFormat: "openai",
     headers: {
-      "User-Agent": "IDE/2.108.1 CodeBuddy/2.108.1",
+      // Channel verification (400 code 11128, probed 2026-10-17) rejects the
+      // generic IDE fingerprint; only the real WorkBuddy desktop identity
+      // passes. Version mirrors %LOCALAPPDATA%\Programs\WorkBuddyAI
+      // (app.asar buildVlmGatewayHeaders) and must track desktop releases.
+      "User-Agent": "WorkBuddy/5.8.4 WorkBuddy/5.8.4",
       "X-Product": "SaaS",
-      "X-IDE-Type": "IDE",
-      "X-IDE-Name": "IDE",
+      "X-IDE-Type": "WorkBuddy",
+      "X-IDE-Name": "WorkBuddy",
+      "X-IDE-Version": "5.8.4",
+      "X-Private-Data": "true",
+      "X-Agent-Intent": "craft",
+      "X-Agent-Purpose": "conversation",
       "x-requested-with": "XMLHttpRequest",
       "x-codebuddy-request": "1",
     },

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { DefaultExecutor } from "./default.js";
 
 /**
@@ -11,6 +12,20 @@ import { DefaultExecutor } from "./default.js";
 export class CodeBuddyIntlExecutor extends DefaultExecutor {
   constructor() {
     super("codebuddy-intl");
+  }
+
+  // Channel verification (400 code 11128) demands per-request conversation
+  // ids on top of the static WorkBuddy identity headers — static-only gets
+  // rejected (ablation probe 2026-10-17). Mirrors applyGatewayHeaders in the
+  // official desktop client.
+  buildHeaders(credentials, stream = true, url, model, body = null) {
+    const headers = super.buildHeaders(credentials, stream, url, model, body);
+    headers["X-Request-ID"] = randomUUID();
+    headers["X-Conversation-ID"] = randomUUID();
+    headers["X-Conversation-Request-ID"] = randomUUID();
+    headers["X-Conversation-Message-ID"] = randomUUID();
+    headers["acp-connection-id"] = randomUUID();
+    return headers;
   }
 
   transformRequest(model, body, stream, credentials) {
