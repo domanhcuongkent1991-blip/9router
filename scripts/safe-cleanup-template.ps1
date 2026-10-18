@@ -18,6 +18,7 @@ param(
   [switch]$WhatIfMode
 )
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8  # emit UTF-8 stdout (PS 5.1 defaults to console codepage)
 $Target = (Resolve-Path $Target -ErrorAction Stop).Path
 $log = @()
 function Log($m) { $line = "$(Get-Date -Format o) $m"; $log += $line; Write-Host $line }
