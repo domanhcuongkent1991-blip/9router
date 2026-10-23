@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import { createHash } from "node:crypto";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
@@ -9,6 +10,17 @@ function maskApiKey(key) {
   if (trimmed.length <= 12) return trimmed.charAt(0) + "***";
   // Keep the tail: keys sharing a machine-id prefix (team keys) must not collide.
   return trimmed.slice(0, 8) + "***" + trimmed.slice(-4);
+}
+
+// Public, stable bucket identity for usage stats. Managed keys use their DB id;
+// unmanaged keys are pseudonymized. The raw key must never reach a response:
+// masking alone collides team keys that share a machine-id prefix.
+export function usageApiKeyId(rawKey, keyInfo) {
+  if (!rawKey || typeof rawKey !== "string") return "local-no-key";
+  const trimmed = rawKey.trim();
+  if (!trimmed) return "local-no-key";
+  if (keyInfo?.id) return `key:${keyInfo.id}`;
+  return `anon:${createHash("sha256").update(trimmed).digest("hex").slice(0, 12)}`;
 }
 
 const PENDING_TIMEOUT_MS = 60 * 1000;
@@ -504,7 +516,7 @@ export async function getUsageStats(period = "all") {
         if (dateKey > (stats.byAccount[accountKey].lastUsed || "")) stats.byAccount[accountKey].lastUsed = dateKey;
       }
 
-      for (const [akKey, ak] of Object.entries(day.byApiKey || {})) {
+      for (const ak of Object.values(day.byApiKey || {})) {
         const rawModel = ak.rawModel || "";
         const provider = ak.provider || "";
         const providerDisplayName = providerNodeNameMap[provider] || provider;
@@ -513,15 +525,17 @@ export async function getUsageStats(period = "all") {
         const apiKeyMasked = maskApiKey(apiKeyVal);
         const keyName = keyInfo?.name || (apiKeyVal ? (apiKeyMasked || apiKeyVal.slice(0, 8) + "...") : "Local (No API Key)");
         const apiKeyKey = apiKeyMasked || "local-no-key";
-        if (!stats.byApiKey[akKey]) {
-          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey, lastUsed: dateKey };
+        const apiKeyId = apiKeyVal ? usageApiKeyId(apiKeyVal, keyInfo) : "local-no-key";
+        const bucketKey = `${apiKeyId}|${rawModel}|${provider || "unknown"}`;
+        if (!stats.byApiKey[bucketKey]) {
+          stats.byApiKey[bucketKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey, apiKeyId, lastUsed: dateKey };
         }
-        stats.byApiKey[akKey].requests += ak.requests || 0;
-        stats.byApiKey[akKey].promptTokens += ak.promptTokens || 0;
-        stats.byApiKey[akKey].completionTokens += ak.completionTokens || 0;
-        stats.byApiKey[akKey].cachedTokens += ak.cachedTokens || 0;
-        stats.byApiKey[akKey].cost += ak.cost || 0;
-        if (dateKey > (stats.byApiKey[akKey].lastUsed || "")) stats.byApiKey[akKey].lastUsed = dateKey;
+        stats.byApiKey[bucketKey].requests += ak.requests || 0;
+        stats.byApiKey[bucketKey].promptTokens += ak.promptTokens || 0;
+        stats.byApiKey[bucketKey].completionTokens += ak.completionTokens || 0;
+        stats.byApiKey[bucketKey].cachedTokens += ak.cachedTokens || 0;
+        stats.byApiKey[bucketKey].cost += ak.cost || 0;
+        if (dateKey > (stats.byApiKey[bucketKey].lastUsed || "")) stats.byApiKey[bucketKey].lastUsed = dateKey;
       }
 
       for (const [epKey, ep] of Object.entries(day.byEndpoint || {})) {
@@ -565,10 +579,13 @@ export async function getUsageStats(period = "all") {
         if (stats.byAccount[accountKey] && new Date(ts) > new Date(stats.byAccount[accountKey].lastUsed)) stats.byAccount[accountKey].lastUsed = ts;
       }
 
-      const apiKeyKey = (e.apiKey && typeof e.apiKey === "string")
-        ? `${e.apiKey}|${e.model}|${e.provider || "unknown"}`
+      const apiKeyId = (e.apiKey && typeof e.apiKey === "string" && e.apiKey.trim())
+        ? usageApiKeyId(e.apiKey, apiKeyMap[e.apiKey.trim()])
+        : null;
+      const overlayKey = apiKeyId
+        ? `${apiKeyId}|${e.model}|${e.provider || "unknown"}`
         : "local-no-key";
-      if (stats.byApiKey[apiKeyKey] && new Date(ts) > new Date(stats.byApiKey[apiKeyKey].lastUsed)) stats.byApiKey[apiKeyKey].lastUsed = ts;
+      if (stats.byApiKey[overlayKey] && new Date(ts) > new Date(stats.byApiKey[overlayKey].lastUsed)) stats.byApiKey[overlayKey].lastUsed = ts;
 
       const endpoint = e.endpoint || "Unknown";
       const endpointKey = `${endpoint}|${e.model}|${e.provider || "unknown"}`;
@@ -639,11 +656,11 @@ export async function getUsageStats(period = "all") {
         const keyInfo = apiKeyMap[apiKeyVal];
         const apiKeyMasked = maskApiKey(apiKeyVal);
         const keyName = keyInfo?.name || apiKeyMasked || r.apiKey.slice(0, 8) + "...";
-        // Key by the FULL api key (same as the daily rollup + lastUsed overlay)
-        // — masking here collided all keys sharing a prefix into one bucket.
-        const akKey = `${r.apiKey}|${r.model}|${r.provider || "unknown"}`;
+        const apiKeyId = usageApiKeyId(apiKeyVal, keyInfo);
+        // Bucket on the public id (managed key id or hash), never the raw key.
+        const akKey = `${apiKeyId}|${r.model}|${r.provider || "unknown"}`;
         if (!stats.byApiKey[akKey]) {
-          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, lastUsed: r.timestamp };
+          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, apiKeyId, lastUsed: r.timestamp };
         }
         const ake = stats.byApiKey[akKey];
         ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
