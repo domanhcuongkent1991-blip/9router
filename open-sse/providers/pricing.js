@@ -2,7 +2,7 @@
 //
 // Fallback order (first match wins):
 //   1. PROVIDER_PRICING[provider][model]  — provider-specific override
-//   2. FREE_MODEL_NAMESPACES               — upstream bills these at $0
+//   2. FREE_MODEL_NAMESPACES / _SUFFIXES   — upstream bills these at $0
 //   3. MODEL_PRICING[model]               — canonical model price (provider-agnostic)
 //   4. PATTERN_PRICING                    — glob pattern match (e.g. "codex-*")
 
@@ -14,15 +14,23 @@
  */
 export const FREE_MODEL_NAMESPACES = ["cline-free/"];
 
+/**
+ * Suffixes upstream uses to mark a $0 tier. Without this, a free id such as
+ * "glm-5.3-flash-free" falls through to PATTERN_PRICING ("glm-5*") and gets
+ * billed at the paid rate.
+ */
+export const FREE_MODEL_SUFFIXES = ["-free", ":free"];
+
 export const ZERO_PRICING = {
   input: 0, output: 0, cached: 0, reasoning: 0, cache_creation: 0,
 };
 
-/** True when the model id sits in a namespace upstream bills at $0. */
+/** True when the model id sits in a namespace or tier upstream bills at $0. */
 export function isFreeModel(model) {
   if (!model) return false;
   const lower = String(model).toLowerCase();
-  return FREE_MODEL_NAMESPACES.some((ns) => lower.startsWith(ns));
+  return FREE_MODEL_NAMESPACES.some((ns) => lower.startsWith(ns))
+    || FREE_MODEL_SUFFIXES.some((suffix) => lower.endsWith(suffix));
 }
 
 /**
