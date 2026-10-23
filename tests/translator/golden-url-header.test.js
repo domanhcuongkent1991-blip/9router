@@ -33,9 +33,9 @@ function sanitize(headers) {
           .replace(/sk-test-APIKEY|tok-test-ACCESS/g, "<CRED>")
           .replace(/kimi-\d{10,}/g, "kimi-<TS>")
           .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<UUID>")
-          .replace(/(claude-cli|grok-shell|cline|kimi-cli|minimax-code|minimax-m2|vscode|opencode)\/[\d.]+/g, "$1/<VER>")
+          .replace(/(9Router|CLI|claude-cli|grok-shell|cline|kimi-cli|minimax-code|minimax-m2|IDE|CodeBuddy|WorkBuddy|vscode|opencode)\/[\d.]+/g, "$1/<VER>")
       : v;
-    if (typeof out[k] === "string" && /^x-grok-client-version$/.test(k)) out[k] = "<VER>";
+    if (typeof out[k] === "string" && /^(x-client-version|x-core-version|x-msh-version|x-ide-version|x-grok-client-version)$/i.test(k)) out[k] = "<VER>";
   }
   return out;
 }
