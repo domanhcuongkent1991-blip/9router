@@ -29,7 +29,6 @@ import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
 import { resolveContextGuard, estimateRequestTokens, checkContextFit, contextGuardDeniedResponse } from "../services/contextGuard.js";
 import { resolveGrowthGuard, observeSessionGrowth, growthWarningMessage, growthAgainstWindow } from "../services/sessionGrowth.js";
-import { resolveSessionIdentity } from "open-sse/utils/sessionManager.js";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
 

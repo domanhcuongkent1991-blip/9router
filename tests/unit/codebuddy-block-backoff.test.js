@@ -43,14 +43,18 @@ describe("CodeBuddy Intl block backoff (#5024)", () => {
       .toEqual({ shouldFallback: true, cooldownMs: BACKOFF_CONFIG.max, newBackoffLevel: BACKOFF_CONFIG.maxLevel });
   });
 
+  // Local 20a43f5a: a 4xx that no rule matched is request-scoped — the result
+  // carries `requestScoped: true` so callers can distinguish "this request was
+  // rejected" from "this account is cooling down". Upstream 3b137aa6 wrote
+  // these expects without that field; pinned to the local shape here.
   it.each(["openai", "codebuddy-cn", null])("keeps the same text request-scoped for provider %s", (provider) => {
     expect(checkFallbackError(400, "request illegal", 0, provider))
-      .toEqual({ shouldFallback: false, cooldownMs: 0 });
+      .toEqual({ shouldFallback: false, cooldownMs: 0, requestScoped: true });
   });
 
   it("does not classify every 11128 code as a block", () => {
     expect(checkFallbackError(400, { code: 11128, msg: "first message is not system prompt" }, 0, "codebuddy-intl"))
-      .toEqual({ shouldFallback: false, cooldownMs: 0 });
+      .toEqual({ shouldFallback: false, cooldownMs: 0, requestScoped: true });
   });
 
   it("persists the account cooldown and incremented backoff level through the cbai alias", async () => {
@@ -82,7 +86,11 @@ describe("CodeBuddy Intl block backoff (#5024)", () => {
     ]);
   });
 
-  it("still stops a combo on a malformed CodeBuddy request", async () => {
+  // Local 20a43f5a behavior: a request-scoped 4xx does not cool down the
+  // account, and the combo still advances to the next member — the request
+  // may be perfectly valid for the backup provider's format. Upstream stops
+  // the combo instead; pinned to the local behavior here.
+  it("advances a combo to the next member on a request-scoped 4xx and cools nothing down", async () => {
     const error = Response.json({ error: { message: "first message is not system prompt" } }, { status: 400 });
     const dispatch = vi.fn().mockResolvedValue(error);
     const result = await handleComboChat({
@@ -91,7 +99,7 @@ describe("CodeBuddy Intl block backoff (#5024)", () => {
       comboName: "malformed-combo", comboStrategy: "fallback",
     });
     expect(result).toBe(error);
-    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledTimes(2);
     expect(db.updateProviderConnection).not.toHaveBeenCalled();
   });
 });

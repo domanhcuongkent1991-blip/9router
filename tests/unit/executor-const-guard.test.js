@@ -39,11 +39,11 @@ describe("provider baseUrl const (full path, no trailing slash)", () => {
   });
 });
 
-// 429 was 6 after the June registry migration; the maintainer lowered it to 3 in
-// 3f9382de ("Fix AG, Kiro, Xiaomi Provider"); it has been 3 since.
-describe("antigravity retry (429=3, 503=3)", () => {
-  it("429 attempts = 3", () => {
-    expect(antigravity.transport.retry["429"].attempts).toBe(3);
+// Local intentional change (pre-109): 429 attempts raised to 6 for antigravity
+// free-tier rate limits; upstream 3f9382de keeps 3 but this fork runs 6.
+describe("antigravity retry (intentional change: 429=6, 503=3)", () => {
+  it("429 attempts = 6", () => {
+    expect(antigravity.transport.retry["429"].attempts).toBe(6);
   });
   it("503 attempts = 3", () => {
     expect(antigravity.transport.retry["503"].attempts).toBe(3);

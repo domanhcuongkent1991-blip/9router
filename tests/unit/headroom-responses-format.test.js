@@ -99,9 +99,14 @@ describe("compressWithHeadroom openai-responses format (#1998)", () => {
       diagnostics,
     });
 
+    // Since upstream a440ef43, unsafe Responses input is no longer skipped
+    // wholesale: plain-text function_call_output items are still compressed
+    // on their own (protocol items stay untouched). The mock replies with a
+    // user-role message, which applyToolOutputText rejects — so the whole
+    // compress attempt returns null without mutating body.input.
     expect(data).toBeNull();
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(body.input).toEqual(input);
-    expect(diagnostics.reason).toBe("skipped: openai-responses tool/reasoning input is not safe to compress");
+    expect(diagnostics.reason).toBe("proxy response did not preserve tool-output IDs, order, roles or text");
   });
 });

@@ -1,4 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { spawnSync } from "node:child_process";
+const hasFfmpeg = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 const mocks = vi.hoisted(() => ({ update: vi.fn(), latest: vi.fn(), fetch: vi.fn(), refresh: vi.fn(), httpsRequest: vi.fn() }));
@@ -39,7 +41,7 @@ beforeEach(() => {
     return req;
   });
 });
-it("uses the real persisted refresh service before sending expired-account OAuth audio", async () => {
+it.skipIf(!hasFfmpeg)("uses the real persisted refresh service before sending expired-account OAuth audio", async () => {
   const response = await POST(request());
   expect(response.status).toBe(200);
   expect(mocks.update).toHaveBeenCalledWith("offline-connection", expect.objectContaining({ accessToken: "offline-refreshed-token", refreshToken: "offline-rotated-refresh", providerSpecificData: { workspaceId: "workspace", customMetadata: "preserve-me", chatgptAccountId: "account" } }));
