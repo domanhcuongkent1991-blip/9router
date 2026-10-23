@@ -26,6 +26,10 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
+import { resolveContextGuard, estimateRequestTokens, checkContextFit, contextGuardDeniedResponse } from "../services/contextGuard.js";
+import { resolveGrowthGuard, observeSessionGrowth, growthWarningMessage, growthAgainstWindow } from "../services/sessionGrowth.js";
+import { resolveSessionIdentity } from "open-sse/utils/sessionManager.js";
+import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 
 /**
  * Handle chat completion request
@@ -231,6 +235,62 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   }
 
   const { provider, model } = modelInfo;
+
+  // Pre-flight context check: refuse an oversized prompt before it reaches
+  // upstream, where it would be truncated or billed and then fail.
+  const guardSettings = await getSettings();
+  const estimatedTokens = estimateRequestTokens(body);
+  const contextGuard = resolveContextGuard(guardSettings);
+  if (contextGuard.enabled) {
+    const fit = checkContextFit({
+      estimatedTokens,
+      capabilities: getCapabilitiesForModel(provider, model),
+      guard: contextGuard,
+    });
+    if (!fit.ok) {
+      log.warn("CHAT", `[${provider}/${model}] context over budget`, {
+        estimatedTokens: fit.estimatedTokens,
+        contextWindow: fit.contextWindow,
+      });
+      return contextGuardDeniedResponse({
+        modelLabel: `${provider}/${model}`,
+        estimatedTokens: fit.estimatedTokens,
+        contextWindow: fit.contextWindow,
+        threshold: contextGuard.threshold,
+      });
+    }
+    if (fit.level === "warn") {
+      log.info("CHAT", `[${provider}/${model}] context near limit`, {
+        estimatedTokens: fit.estimatedTokens,
+        contextWindow: fit.contextWindow,
+      });
+    }
+  }
+
+  // Session growth watch: a prompt that climbs turn after turn without ever
+  // shrinking means compaction is not happening, which is what made the
+  // 2026-10-22 incident expensive. Warn only; the guard above does the blocking.
+  const growthGuard = resolveGrowthGuard(guardSettings);
+  if (growthGuard.enabled) {
+    const { sessionId, ephemeral } = resolveSessionIdentity({
+      headers: request.headers,
+      body,
+      connectionId: provider,
+      scope: provider,
+    });
+    const growth = observeSessionGrowth({
+      sessionId: ephemeral ? null : sessionId,
+      promptTokens: estimatedTokens,
+      guard: growthGuard,
+    });
+    if (growth.warning) {
+      log.warn("CHAT", growthWarningMessage(growth.warning), {
+        provider,
+        model,
+        ...growthAgainstWindow({ promptTokens: estimatedTokens, provider, model }),
+      });
+    }
+  }
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 

@@ -17,6 +17,13 @@ const DEFAULT_SETTINGS = {
   comboStrategy: "fallback",
   comboStickyRoundRobinLimit: 1,
   comboStrategies: {},
+  contextGuardEnabled: false,
+  contextGuardThreshold: 0.9,
+  contextGuardWarnRatio: 0.7,
+  sessionGrowthGuardEnabled: false,
+  sessionGrowthMinSamples: 4,
+  sessionGrowthRatio: 1.5,
+  sessionGrowthWindowSize: 8,
   capacityAdapter: {
     vision: { enabled: true, roundRobin: false, models: [] },
     pdf: { enabled: false, roundRobin: false, models: [] },
