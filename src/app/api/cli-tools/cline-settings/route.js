@@ -12,6 +12,7 @@ const execAsync = promisify(exec);
 const getDataDir = () => path.join(os.homedir(), ".cline", "data");
 const getGlobalStatePath = () => path.join(getDataDir(), "globalState.json");
 const getSecretsPath = () => path.join(getDataDir(), "secrets.json");
+const getProvidersPath = () => path.join(getDataDir(), "settings", "providers.json");
 
 const checkInstalled = async () => {
   try {
@@ -44,12 +45,28 @@ const readJson = async (filePath) => {
   }
 };
 
+// Cline 4.x migrated provider config out of globalState.json into
+// settings/providers.json (keyed by mode); globalState.json alone is ignored
+// once __openAiBaseUrlV1Migrated is set, so both must be written.
+const is9RouterBaseUrl = (baseUrl) => {
+  const url = String(baseUrl || "");
+  return url.includes("localhost") || url.includes("127.0.0.1") || url.includes("9router");
+};
+
+const readProvidersConfig = async () => (await readJson(getProvidersPath())) || null;
+
+const has9RouterProviderConfig = async () => {
+  const providers = await readProvidersConfig();
+  if (!providers || !providers.providers) return false;
+  return Object.values(providers.providers).some((entry) => is9RouterBaseUrl(entry?.settings?.baseUrl));
+};
+
 const has9RouterConfig = (globalState) => {
   if (!globalState) return false;
   const isOpenAi =
     globalState.actModeApiProvider === "openai" || globalState.planModeApiProvider === "openai";
   const baseUrl = globalState.openAiBaseUrl || "";
-  return isOpenAi && (baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1") || baseUrl.includes("9router"));
+  return isOpenAi && is9RouterBaseUrl(baseUrl);
 };
 
 export async function GET() {
@@ -59,6 +76,8 @@ export async function GET() {
       return NextResponse.json({ installed: false, settings: null, message: "Cline CLI is not installed" });
     }
     const globalState = await readJson(getGlobalStatePath());
+    const providersConfig = await readProvidersConfig();
+    const providerEntry = providersConfig?.providers?.["9router"]?.settings;
     return NextResponse.json({
       installed: true,
       settings: {
@@ -66,9 +85,13 @@ export async function GET() {
         planModeApiProvider: globalState?.planModeApiProvider,
         openAiBaseUrl: globalState?.openAiBaseUrl,
         openAiModelId: globalState?.openAiModelId,
+        providersBaseUrl: providerEntry?.baseUrl,
+        providersModel: providerEntry?.model,
+        providersLastUsed: providersConfig?.lastUsedProvider,
       },
-      has9Router: has9RouterConfig(globalState),
+      has9Router: has9RouterConfig(globalState) || (await has9RouterProviderConfig()),
       globalStatePath: getGlobalStatePath(),
+      providersPath: getProvidersPath(),
     });
   } catch (error) {
     console.log("Error checking cline settings:", error);
@@ -100,7 +123,28 @@ export async function POST(request) {
     secrets.openAiApiKey = apiKey;
     await fs.writeFile(getSecretsPath(), JSON.stringify(secrets, null, 2));
 
-    return NextResponse.json({ success: true, message: "Cline settings applied successfully!", globalStatePath: getGlobalStatePath() });
+    await fs.mkdir(path.dirname(getProvidersPath()), { recursive: true });
+    const providersConfig = (await readJson(getProvidersPath())) || { version: 1, providers: {} };
+    providersConfig.providers = providersConfig.providers || {};
+    providersConfig.providers["9router"] = {
+      settings: {
+        provider: "openai-compatible",
+        protocol: "openai-chat",
+        baseUrl: normalizedBaseUrl,
+        apiKey,
+        model,
+      },
+      updatedAt: new Date().toISOString(),
+    };
+    providersConfig.lastUsedProvider = "9router";
+    await fs.writeFile(getProvidersPath(), JSON.stringify(providersConfig, null, 2));
+
+    return NextResponse.json({
+      success: true,
+      message: "Cline settings applied successfully!",
+      globalStatePath: getGlobalStatePath(),
+      providersPath: getProvidersPath(),
+    });
   } catch (error) {
     console.log("Error updating cline settings:", error);
     return NextResponse.json({ error: "Failed to update cline settings" }, { status: 500 });
@@ -126,6 +170,15 @@ export async function DELETE() {
     const secrets = (await readJson(getSecretsPath())) || {};
     delete secrets.openAiApiKey;
     await fs.writeFile(getSecretsPath(), JSON.stringify(secrets, null, 2));
+
+    const providersConfig = await readProvidersConfig();
+    if (providersConfig?.providers?.["9router"]) {
+      delete providersConfig.providers["9router"];
+      if (providersConfig.lastUsedProvider === "9router") {
+        delete providersConfig.lastUsedProvider;
+      }
+      await fs.writeFile(getProvidersPath(), JSON.stringify(providersConfig, null, 2));
+    }
 
     return NextResponse.json({ success: true, message: "9Router settings removed from Cline" });
   } catch (error) {

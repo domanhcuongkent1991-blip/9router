@@ -38,10 +38,9 @@ export default {
   // Free tier only (owner policy 2026-10-13): the live resolver filters the
   // catalog to `:free` variants plus the feed's `cline-free/*` namespace; this
   // static fallback mirrors that set for when the live catalog is unreachable.
+  // `cline-free/*` has since been retired upstream: only solar-mini4 still
+  // resolves, the rest 404 with "model not found" and were dropped.
   models: [
-    { id: "cline-free/step-5-preview", name: "Step 5 Preview" },
-    { id: "cline-free/mimo-v2.6-flash", name: "Mimo V2.6 Flash" },
-    { id: "cline-free/muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor" },
     { id: "cline-free/solar-mini4", name: "Solar Mini 4" },
     { id: "apodex/apodex-1.1-mini:free", name: "Apodex 1.1 Mini (free)" },
     { id: "dots-studio/dots-3-note-preview:free", name: "Dots 3 Note Preview (free)" },
