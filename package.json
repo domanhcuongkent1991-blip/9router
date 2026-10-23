@@ -56,7 +56,8 @@
     "ws": "^8.18.0"
   },
   "overrides": {
-    "dompurify": "3.4.13"
+    "dompurify": "3.4.13",
+    "ip-address": "^10.7.4"
   },
   "comment_better_sqlite3": "kept in optionalDependencies so npm install doesn't fail on systems without build tools — sql.js is used as fallback at runtime",
   "comment_aws_sdk_credential_providers": "kept in optionalDependencies (npm still installs these by default) and imported lazily in shared/awsCredentials.js — only AWS Bedrock connections using profile/SSO mode need it; static accessKeyId/secretAccessKey connections never load it",
@@ -69,9 +70,5 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^4",
     "wreq-js": "^3.2.0"
-  },
-  "overrides": {
-    "dompurify": "^3.4.17",
-    "ip-address": "^10.7.4"
   }
 }
