@@ -325,6 +325,16 @@ function normalizeOpencodeReasoning(model, body) {
   delete body.reasoning_effort;
 }
 
+// Chat Completions lane: the free backend validates reasoning_effort against the
+// plain OpenAI enum (none|minimal|low|medium|high|xhigh|max) and answers 400
+// "Invalid option" for anything else — including "auto", which adaptive thinking
+// (Claude Code's thinking:{type:"adaptive"}) arrives as. Omitting the field lets
+// the upstream pick its own default, which is what adaptive means; same rationale
+// as the Responses path above, which rejects "unknown variant `auto`".
+function dropAdaptiveReasoningEffort(body) {
+  if (body?.reasoning_effort === "auto") delete body.reasoning_effort;
+}
+
 export class OpenCodeExecutor extends BaseExecutor {
   constructor() {
     super("opencode", PROVIDERS.opencode);
@@ -377,6 +387,7 @@ export class OpenCodeExecutor extends BaseExecutor {
       // let response handlers restore caller spellings via the rename map.
       clampToolNamesForUpstream(body);
     } else if (body && typeof body === "object") {
+      dropAdaptiveReasoningEffort(body);
       applyFingerprintTools(body, false);
       // opencode.ai rejects tool names longer than 64 chars — alias them and
       // let response handlers restore caller spellings via the rename map.
