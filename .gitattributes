@@ -1,0 +1,5 @@
+# vitest writes snapshot files with LF from Node regardless of platform; with
+# core.autocrlf=true a test run then leaves every touched *.snap perpetually
+# "modified" (empty diff). Pin LF on checkout and normalize on add so the
+# working tree stays quiet after test runs.
+*.snap text eol=lf
