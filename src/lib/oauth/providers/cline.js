@@ -1,4 +1,5 @@
 import { CLINE_CONFIG } from "../constants/oauth.js";
+import { getClineAccessToken } from "open-sse/shared/clineAuth.js";
 
 const cline = {
   config: CLINE_CONFIG,
@@ -49,7 +50,11 @@ const cline = {
     }
   },
   mapTokens: (tokens) => ({
-    accessToken: tokens.access_token,
+    // Cline's API only accepts JWTs carrying the `workos:` prefix; storing the
+    // bare JWT here used to resurface 401 "re-authenticate" on the next OAuth
+    // login because applyAuth overwrites the Authorization the clineHeaders
+    // hook had already fixed up. Normalize at the source instead.
+    accessToken: getClineAccessToken(tokens.access_token),
     refreshToken: tokens.refresh_token,
     expiresIn: tokens.expires_at
       ? Math.floor((new Date(tokens.expires_at).getTime() - Date.now()) / 1000)
