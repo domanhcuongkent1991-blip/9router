@@ -51,6 +51,22 @@ export async function writeStreamError(writer, statusCode, message) {
 }
 
 /**
+ * Parse a standard Retry-After header (delta-seconds or HTTP-date) into an
+ * absolute ms epoch. Providers without a bespoke parseError() — notably the
+ * no-auth free lanes — rely on this for their precise 429 cooldown.
+ * @param {Response} response
+ * @returns {number|null}
+ */
+function parseRetryAfterMs(response) {
+  const raw = response.headers?.get?.("retry-after");
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Date.now() + seconds * 1000;
+  const date = Date.parse(raw);
+  return Number.isNaN(date) ? null : date;
+}
+
+/**
  * Parse upstream provider error response
  * @param {Response} response - Fetch response from provider
  * @param {object} [executor] - Optional executor with parseError() override for provider-specific parsing
@@ -63,6 +79,7 @@ export async function parseUpstreamError(response, executor = null) {
   } catch {
     bodyText = "";
   }
+  const retryAfterMs = parseRetryAfterMs(response);
 
   // Let executor-specific parser extract provider-specific fields (e.g. codex resetsAtMs)
   if (executor && typeof executor.parseError === "function") {
@@ -70,7 +87,7 @@ export async function parseUpstreamError(response, executor = null) {
       const parsed = executor.parseError(response, bodyText);
       if (parsed && typeof parsed === "object") {
         const msg = parsed.message || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
-        return { statusCode: parsed.status || response.status, message: msg, resetsAtMs: parsed.resetsAtMs };
+        return { statusCode: parsed.status || response.status, message: msg, resetsAtMs: parsed.resetsAtMs ?? retryAfterMs };
       }
     } catch { /* fall through to default parsing */ }
   }
@@ -86,7 +103,7 @@ export async function parseUpstreamError(response, executor = null) {
   const messageStr = typeof message === "string" ? message : JSON.stringify(message);
   const finalMessage = messageStr || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
 
-  return { statusCode: response.status, message: finalMessage };
+  return { statusCode: response.status, message: finalMessage, resetsAtMs: retryAfterMs ?? undefined };
 }
 
 /**

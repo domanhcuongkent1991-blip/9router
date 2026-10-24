@@ -1,6 +1,7 @@
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
+import { markNoauthCooldown, getNoauthCooldownUntil } from "open-sse/services/noauthCooldown.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { getAntigravityQuotaCache, getAntigravityModelQuota } from "./antigravityQuota.js";
@@ -45,6 +46,19 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
     if (FREE_PROVIDERS[providerId]?.noAuth) {
+      // Free-lane cooldown gate: after an upstream 429 the RAM lock answers
+      // here instead of letting every next request burn the daily quota.
+      const noauthUntil = getNoauthCooldownUntil(providerId, model);
+      if (noauthUntil) {
+        log.warn("AUTH", `${providerId} | free-lane cooldown active for ${model || "all"} (${formatRetryAfter(noauthUntil)}) — blocked at gateway`);
+        return {
+          allRateLimited: true,
+          retryAfter: noauthUntil,
+          retryAfterHuman: formatRetryAfter(noauthUntil),
+          lastError: "Free-tier upstream rate-limited (gateway cooldown)",
+          lastErrorCode: 429,
+        };
+      }
       const settings = await getSettings();
       const override = (settings.providerStrategies || {})[providerId] || {};
       const strategy = override.rotateStrategy || "none";
@@ -57,6 +71,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" });
       return {
         id: "noauth",
+        connectionId: "noauth",
         connectionName: "Public",
         isActive: true,
         accessToken: "public",
@@ -274,7 +289,27 @@ function isAuthError(status, errorText) {
 }
 
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
-  if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
+  if (!connectionId) return { shouldFallback: false, cooldownMs: 0 };
+  // Free lane: no connection record exists to hold modelLock_* keys, so arm the
+  // RAM cooldown instead. shouldFallback stays false on purpose — the chat
+  // fallback loop can't exclude a virtual connection (it would be re-selected
+  // forever); the current request surfaces the upstream error, the NEXT one is
+  // blocked at the gateway by the noauth gate in getProviderCredentials.
+  if (connectionId === "noauth") {
+    const providerId = resolveProviderId(provider);
+    let shouldFallback, cooldownMs;
+    if (resetsAtMs && resetsAtMs > Date.now()) {
+      shouldFallback = true;
+      cooldownMs = Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
+    } else {
+      ({ shouldFallback, cooldownMs } = checkFallbackError(status, errorText, 0, providerId));
+    }
+    if (shouldFallback && cooldownMs > 0) {
+      markNoauthCooldown(providerId, model, cooldownMs);
+      log.warn("AUTH", `Public lane ${providerId}/${model || "*"} cooldown ${formatRetryAfter(Date.now() + cooldownMs)} [${status}]`);
+    }
+    return { shouldFallback: false, cooldownMs: 0 };
+  }
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
