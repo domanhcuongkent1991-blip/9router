@@ -64,16 +64,15 @@ describe("Nous Research provider", () => {
     expect(NOUS_MODELS_URL).toBe("https://inference-api.nousresearch.com/v1/models");
   });
 
-  it("seeds the 8 current live free-tier models with advertised context", () => {
+  it("seeds the 5 current live free-tier models with advertised context", () => {
+    // Pruned 2026-10-26 after a full smoke: longcat-2.0 ("no longer free"),
+    // step-5-preview ("free period has ended"), stealth/missingno (404).
     const expectedIds = [
-      "meituan/longcat-2.0:free",
       "meituan/longcat-2.5-preview:free",
-      "stepfun/step-5-preview:free",
       "upstage/solar-mini4:free",
       "stepfun/step-3.7-flash:free",
       "poolside/laguna-s-2.1:free",
       "poolside/laguna-xs-2.1:free",
-      "stealth/missingno",
     ];
     const models = PROVIDER_MODELS.nous || [];
 

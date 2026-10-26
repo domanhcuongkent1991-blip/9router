@@ -367,9 +367,10 @@ export async function buildModelsList(kindFilter, options = {}) {
     }
   }
 
-  // Include no-auth free providers (e.g. opencode) so their models are exposed in /v1/models
+  // Include no-auth free providers (e.g. opencode) so their models are exposed in /v1/models.
+  // `hidden` providers (e.g. mimo-free, whose upstream free channel ended) stay out.
   for (const [id, provider] of Object.entries(FREE_PROVIDERS || {})) {
-    if (provider?.noAuth && !activeConnectionByProvider.has(id)) {
+    if (provider?.noAuth && !provider.hidden && !activeConnectionByProvider.has(id)) {
       activeConnectionByProvider.set(id, {
         id: "noauth",
         provider: id,

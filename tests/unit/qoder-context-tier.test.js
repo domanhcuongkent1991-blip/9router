@@ -182,10 +182,13 @@ describe("routableQoderModels", () => {
     };
     // Sonus (smodel) / Cantus (cmodel) are absent from the catalog but the
     // executor still routes them via QODER_STATIC_MODEL_CONFIGS, so they lead
-    // the list instead of vanishing from /v1/models.
+    // the list instead of vanishing from /v1/models. dfmodel is static-only
+    // here too (added with the Qwen3.8/DeepSeek-V4.1 refresh); qfmodel has a
+    // catalog entry (enable:false), which wins over its static block.
     expect(routableQoderModels(catalog)).toEqual([
       { id: "smodel", name: "Sonus", hidden: false },
       { id: "cmodel", name: "Cantus", hidden: false },
+      { id: "dfmodel", name: "DeepSeek-V4.1-Flash", hidden: false },
       { id: "qmodel_38max", name: "Qwen3.8-Max", hidden: false },
       { id: "qfmodel", name: "Qwen Fast", hidden: true },
       { id: "dmodel", name: "dmodel", hidden: true },

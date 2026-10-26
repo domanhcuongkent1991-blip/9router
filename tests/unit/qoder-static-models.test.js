@@ -18,8 +18,8 @@ import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.j
 import qoderRegistry from "../../open-sse/providers/registry/qoder.js";
 
 describe("Qoder static model configs", () => {
-  it("defines both frontier keys", () => {
-    expect(Object.keys(QODER_STATIC_MODEL_CONFIGS).sort()).toEqual(["cmodel", "smodel"]);
+  it("defines the frontier pair plus the 2026-10 Qwen3.8/DeepSeek-V4.1 flashes", () => {
+    expect(Object.keys(QODER_STATIC_MODEL_CONFIGS).sort()).toEqual(["cmodel", "dfmodel", "qfmodel", "smodel"]);
   });
 
   it("maps the canonical keys into QODER_MODEL_MAP", () => {

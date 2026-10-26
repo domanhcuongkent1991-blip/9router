@@ -38,12 +38,17 @@ const initiateDeviceFlow = () => new QoderService().initiateDeviceFlow();
 const parseExpiry = QoderService.parseExpiry;
 
 describe("QODER_MODEL_MAP", () => {
-  it("allows Qoder's latest model key", () => {
+  it("keeps the retired Qwen3.7 key parseable (still a known Qoder model)", () => {
+    // qmodel_latest was pulled from the per-account catalog on 2026-10-26, so
+    // it left the advertised static list, but the map must keep accepting it.
     expect(QODER_MODEL_MAP.qmodel_latest).toBe("qmodel_latest");
   });
 
-  it("exposes Qoder's latest model in the static provider catalog", () => {
-    expect(PROVIDER_MODELS.qd.some((model) => model.id === "qmodel_latest")).toBe(true);
+  it("exposes the current Qwen3.8 / DeepSeek-V4.1 lineup in the static provider catalog", () => {
+    expect(PROVIDER_MODELS.qd.some((model) => model.id === "qmodel_38max")).toBe(true);
+    expect(PROVIDER_MODELS.qd.some((model) => model.id === "qfmodel")).toBe(true);
+    expect(PROVIDER_MODELS.qd.some((model) => model.id === "dfmodel")).toBe(true);
+    expect(PROVIDER_MODELS.qd.some((model) => model.id === "qmodel_latest")).toBe(false);
   });
 });
 

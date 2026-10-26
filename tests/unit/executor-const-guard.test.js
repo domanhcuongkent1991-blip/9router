@@ -53,12 +53,9 @@ describe("antigravity retry (intentional change: 429=6, 503=3)", () => {
 describe("OpenCode Free endpoint routing", () => {
   const MUSE = "muse-spark-1.2-contributor-free";
 
-  it("declares the Responses format only on the Muse Spark model", () => {
+  it("static registry no longer seeds the dead Muse Spark picks (410/2×unavailable, 2026-10-26)", () => {
     expect(opencode.transport.format).toBeUndefined();
-    const muse = opencode.models.find((m) => m.id === MUSE);
-    expect(muse?.targetFormat).toBe("openai-responses");
-    const muse13 = opencode.models.find((m) => m.id === "muse-spark-1.3-contributor-free");
-    expect(muse13?.targetFormat).toBe("openai-responses");
+    expect(opencode.models.find((m) => typeof m.id === "string" && m.id.startsWith("muse-spark"))).toBeUndefined();
   });
 
   it("routes Muse Spark to /responses and every other model to /chat/completions", () => {

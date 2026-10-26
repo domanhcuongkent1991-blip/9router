@@ -51,22 +51,10 @@ const nous = {
   },
   models: [
     {
-      id: "meituan/longcat-2.0:free",
-      name: "Meituan: LongCat 2.0",
-      contextLength: 1048756,
-      maxOutputTokens: 262144,
-    },
-    {
       id: "meituan/longcat-2.5-preview:free",
       name: "Meituan: LongCat 2.5 Preview",
       contextLength: 1048576,
       maxOutputTokens: 131072,
-    },
-    {
-      id: "stepfun/step-5-preview:free",
-      name: "StepFun: Step 5 Preview",
-      contextLength: 1000000,
-      maxOutputTokens: 64000,
     },
     {
       id: "upstage/solar-mini4:free",
@@ -91,12 +79,6 @@ const nous = {
       name: "Poolside: Laguna XS 2.1",
       contextLength: 262144,
       maxOutputTokens: 32768,
-    },
-    {
-      id: "stealth/missingno",
-      name: "MissingNo",
-      contextLength: 262144,
-      maxOutputTokens: 131072,
     },
   ],
   serviceKinds: ["llm", "imageToText"],

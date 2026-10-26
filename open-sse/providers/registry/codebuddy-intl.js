@@ -58,15 +58,15 @@ export default {
     },
   },
   // Same model lineup exposed by the CN gateway — intl backend is the same catalog.
+  // Pruned 2026-10-26 after a full smoke: glm-5.0-turbo / glm-4.7 / minimax-m2.7 /
+  // deepseek-v4-pro / deepseek-v3-2-volc all return 400 code 11102
+  // "model service info not found" (retired upstream).
   models: [
     { id: "glm-5.2", name: "GLM-5.2" },
     { id: "glm-5.1", name: "GLM-5.1" },
     { id: "glm-5.0", name: "GLM-5.0" },
-    { id: "glm-5.0-turbo", name: "GLM-5.0-Turbo" },
     { id: "glm-5v-turbo", name: "GLM-5v-Turbo" },
-    { id: "glm-4.7", name: "GLM-4.7" },
     { id: "minimax-m3", name: "MiniMax-M3" },
-    { id: "minimax-m2.7", name: "MiniMax-M2.7" },
     { id: "kimi-k2.7", name: "Kimi-K2.7-Code" },
     { id: "kimi-k2.6", name: "Kimi-K2.6" },
     { id: "kimi-k2.5", name: "Kimi-K2.5" },
@@ -75,11 +75,9 @@ export default {
     // Not in the published catalog but the chat endpoint serves it (200, free
     // quota) — same id WorkBuddy desktop sends (sessions table, 2026-10-13).
     { id: "step-5-preview", name: "Step-5-Preview" },
-    { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
     // deepseek-v4-flash replaced server-side by deepseek-v4.1-flash (same
     // catalog as CN; the old endpoint still answers 200 but the list is the contract).
     { id: "deepseek-v4.1-flash", name: "DeepSeek-V4.1-Flash" },
-    { id: "deepseek-v3-2-volc", name: "DeepSeek-V3.2" },
   ],
   oauth: {
     baseUrl: "https://www.codebuddy.ai",

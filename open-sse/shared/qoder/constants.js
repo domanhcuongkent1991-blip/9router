@@ -217,6 +217,27 @@ export const QODER_STATIC_MODEL_CONFIGS = Object.freeze({
     is_reasoning: true,
     max_input_tokens: 180000,
   }),
+  // Added 2026-10-26 alongside the Qwen3.8 / DeepSeek-V4.1 refresh. Both keys
+  // are in the live intl catalog today (qfmodel=Qwen3.8-Flash max_in 180k,
+  // dfmodel=DeepSeek-V4.1-Flash max_in 1M, both vl+reasoning) but free-tier
+  // requests queue at p3 for minutes — a catalog fetch failure during that
+  // window must not make the models unroutable. Live catalog entries win.
+  qfmodel: Object.freeze({
+    ...QODER_STATIC_MODEL_CONFIG_BASE,
+    key: "qfmodel",
+    display_name: "Qwen3.8-Flash",
+    is_vl: true,
+    is_reasoning: true,
+    max_input_tokens: 180000,
+  }),
+  dfmodel: Object.freeze({
+    ...QODER_STATIC_MODEL_CONFIG_BASE,
+    key: "dfmodel",
+    display_name: "DeepSeek-V4.1-Flash",
+    is_vl: true,
+    is_reasoning: true,
+    max_input_tokens: 1000000,
+  }),
 });
 
 /**
