@@ -68,10 +68,32 @@ describe("finish-chunk usage cache for OpenAI chat clients", () => {
     const withUsage = chunks.filter((chunk) => chunk.usage);
     expect(withUsage).toHaveLength(1);
     expect(withUsage[0].usage).toMatchObject({
-      // 1000 input + 200 cache-read = 1200, plus the anti-context-overflow buffer
-      prompt_tokens: 3200,
+      // 1000 input + 200 cache-read = 1200, reported unbuffered (phase 2:
+      // the anti-context-overflow buffer no longer inflates client usage)
+      prompt_tokens: 1200,
       completion_tokens: 50,
       prompt_tokens_details: { cached_tokens: 200 },
+    });
+  });
+
+  it("reports unbuffered usage for an openai-transport finish chunk that carries usage", async () => {
+    const chunks = parseDataEvents(await runTransform(FORMATS.OPENAI, FORMATS.OPENAI, [
+      ...sse({ id: "c1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: "Hi" } }] }),
+      ...sse({
+        id: "c1", object: "chat.completion.chunk",
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 300, completion_tokens: 20, total_tokens: 320, cached_tokens: 100 },
+      }),
+      "data: [DONE]",
+      "",
+    ]));
+
+    const withUsage = chunks.filter((chunk) => chunk.usage);
+    expect(withUsage).toHaveLength(1);
+    expect(withUsage[0].usage).toMatchObject({
+      prompt_tokens: 300,
+      completion_tokens: 20,
+      cached_tokens: 100,
     });
   });
 

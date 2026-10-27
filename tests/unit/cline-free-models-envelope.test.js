@@ -24,10 +24,10 @@ vi.mock("@/lib/usageDb.js", () => ({
 const { pingModelByKind } = await import("../../src/app/api/models/test/ping.js");
 const { handleNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
 
-// The proxy adds a 2000-token headroom buffer to usage before returning it
-// to the client (addBufferToUsage), so response-body usage is input + 2000.
-// The usage recorded via saveRequestUsage is the unbuffered extraction —
-// asserting on it proves the unwrap ran before usage extraction.
+// Phase 2 (2026-10-27): the proxy no longer adds the 2000-token headroom
+// buffer to client-facing usage, so response-body usage equals the upstream
+// numbers. The usage recorded via saveRequestUsage is the same unbuffered
+// extraction — asserting on it proves the unwrap ran before usage extraction.
 const { saveRequestUsage } = await import("@/lib/usageDb.js");
 
 describe("cline free-models {success,data} envelope", () => {
@@ -165,7 +165,7 @@ describe("cline free-models envelope in nonStreamingHandler", () => {
       prompt_tokens: 5,
       completion_tokens: 2,
     });
-    expect(body.usage.prompt_tokens).toBe(2005);
+    expect(body.usage.prompt_tokens).toBe(5);
   });
 
   it("passes a bare (non-enveloped) body through unchanged", async () => {
@@ -185,7 +185,7 @@ describe("cline free-models envelope in nonStreamingHandler", () => {
       prompt_tokens: 3,
       completion_tokens: 1,
     });
-    expect(body.usage.prompt_tokens).toBe(2003);
+    expect(body.usage.prompt_tokens).toBe(3);
   });
 
   // The unwrap is opt-in via transport.quirks.clineEnvelope so it can never

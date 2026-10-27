@@ -3,7 +3,7 @@ import { FORMATS } from "../translator/formats.js";
 import { PROVIDERS } from "../config/providers.js";
 import { liftReasoningAliases } from "../translator/concerns/reasoning.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
-import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
+import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE, ensureStreamToolCallIds } from "./streamHelpers.js";
 import { buildClientToolNameLookup, normalizeToolCallNamesInObject } from "./toolNameNormalize.js";
 import { restoreToolNames } from "./opencodeFingerprint.js";
@@ -307,8 +307,7 @@ export function createSSEStream(options = {}) {
                 usage = estimated;
                 injectedUsage = true;
               } else if (isFinishChunk && usage) {
-                const buffered = addBufferToUsage(usage);
-                parsed.usage = filterUsageForFormat(buffered, FORMATS.OPENAI);
+                parsed.usage = filterUsageForFormat(usage, FORMATS.OPENAI);
                 output = `data: ${JSON.stringify(parsed)}\n`;
                 injectedUsage = true;
               } else if (idFixed || fieldsInjected || toolCallIdFixed || toolNameRestored) {
@@ -466,10 +465,10 @@ export function createSSEStream(options = {}) {
               item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
               state.usage = estimated;
             } else if (state.finishReason && isFinishChunk && state.usage) {
-              // Add buffer and filter usage for client (but keep original in state.usage for logging)
-              const buffered = addBufferToUsage(state.usage);
+              // Filter usage for the client format (but keep original in state.usage for logging)
+              const unbuffered = state.usage;
               const translatedUsage = item.usage;
-              item.usage = filterUsageForFormat(buffered, sourceFormat);
+              item.usage = filterUsageForFormat(unbuffered, sourceFormat);
               // The per-format whitelist drops the flat Claude cache fields on state.usage
               // (cache_read_input_tokens) for OpenAI clients, but the translator already
               // folded the upstream cache into this chunk's usage — re-attach those cache
