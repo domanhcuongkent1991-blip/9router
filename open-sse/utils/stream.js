@@ -468,7 +468,18 @@ export function createSSEStream(options = {}) {
             } else if (state.finishReason && isFinishChunk && state.usage) {
               // Add buffer and filter usage for client (but keep original in state.usage for logging)
               const buffered = addBufferToUsage(state.usage);
+              const translatedUsage = item.usage;
               item.usage = filterUsageForFormat(buffered, sourceFormat);
+              // The per-format whitelist drops the flat Claude cache fields on state.usage
+              // (cache_read_input_tokens) for OpenAI clients, but the translator already
+              // folded the upstream cache into this chunk's usage — re-attach those cache
+              // fields so OpenAI clients see the real cache hit instead of 0.
+              if (translatedUsage?.cached_tokens && !item.usage.cached_tokens) {
+                item.usage.cached_tokens = translatedUsage.cached_tokens;
+              }
+              if (translatedUsage?.prompt_tokens_details && !item.usage.prompt_tokens_details) {
+                item.usage.prompt_tokens_details = translatedUsage.prompt_tokens_details;
+              }
             }
 
             const output = formatSSE(item, sourceFormat);
