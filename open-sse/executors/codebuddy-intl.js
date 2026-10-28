@@ -1,31 +1,20 @@
-import { randomUUID } from "node:crypto";
 import { DefaultExecutor } from "./default.js";
 
 /**
  * CodeBuddyIntlExecutor — talks to https://www.codebuddy.ai/v2/chat/completions
  *
- * Same OpenAI-compatible-but-stream-only gateway behavior as codebuddy-cn:
+ * Same [OI]-compatible-but-stream-only gateway behavior as codebuddy-cn:
  * non-stream requests are rejected, and reasoning is surfaced only when the
- * request carries the IDE's OpenAI-style reasoning params. Force stream and
+ * request carries the IDE's [OI]-style reasoning params. Force stream and
  * mirror reasoning_summary exactly like CodeBuddyExecutor.
+ *
+ * Channel verification (400 code 11128) needs per-request conversation ids;
+ * since v0.5.112 those are owned by the shared `codebuddyHeaders` hook in
+ * default.js (upstream 3fd925ab), which this provider's registry registers.
  */
 export class CodeBuddyIntlExecutor extends DefaultExecutor {
   constructor() {
     super("codebuddy-intl");
-  }
-
-  // Channel verification (400 code 11128) demands per-request conversation
-  // ids on top of the static WorkBuddy identity headers — static-only gets
-  // rejected (ablation probe 2026-10-17). Mirrors applyGatewayHeaders in the
-  // official desktop client.
-  buildHeaders(credentials, stream = true, url, model, body = null) {
-    const headers = super.buildHeaders(credentials, stream, url, model, body);
-    headers["X-Request-ID"] = randomUUID();
-    headers["X-Conversation-ID"] = randomUUID();
-    headers["X-Conversation-Request-ID"] = randomUUID();
-    headers["X-Conversation-Message-ID"] = randomUUID();
-    headers["acp-connection-id"] = randomUUID();
-    return headers;
   }
 
   transformRequest(model, body, stream, credentials) {
