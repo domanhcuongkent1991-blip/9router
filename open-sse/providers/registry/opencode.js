@@ -39,15 +39,19 @@ export default {
     // replaces this list whenever it answers. Seeded 2026-10-26 from the live
     // free lane after a full smoke (the former muse-spark-1.2/1.3 + union-alpha
     // picks died upstream: 410 deprecated / 2× "Model is unavailable").
+    // Refreshed 2026-11-04: longcat-2.5-preview-free died upstream (400 "Model
+    // is unavailable" 2/2 + gone from opencode.ai/inference/v1/models); removed.
+    // pulse-alpha-free / crouton-alpha-free added after a 200 smoke.
     { id: "big-pickle", name: "Big Pickle" },
     { id: "beam-free", name: "Beam (free)" },
     { id: "flint-40b-free", name: "Flint 40B (free)" },
     { id: "glm-5.3-flash-free", name: "GLM-5.3 Flash (free)" },
     { id: "deepseek-v4.1-flash-free", name: "DeepSeek V4.1 Flash (free)" },
-    { id: "longcat-2.5-preview-free", name: "LongCat 2.5 Preview (free)" },
     { id: "mimo-v2.6-flash-free", name: "MiMo V2.6 Flash (free)" },
     { id: "nemotron-3.5-lightning-free", name: "Nemotron 3.5 Lightning (free)" },
     { id: "nemotron-3.5-super-vl-free", name: "Nemotron 3.5 Super VL (free)" },
+    { id: "pulse-alpha-free", name: "Pulse Alpha (free)" },
+    { id: "crouton-alpha-free", name: "Crouton Alpha (free)" },
   ],
   serviceKinds: ["llm", "systemone"],
   systemoneConfig: {
