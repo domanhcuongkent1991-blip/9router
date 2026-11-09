@@ -83,7 +83,7 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
   // Strip explicit content types (opt-in via strip[] in PROVIDER_MODELS entry)
   stripContentTypes(result, stripList);
 
-  // Normalize thinking config: remove if lastMessage is not user
+  // Normalize thinking config while preserving user and tool-result turns.
   normalizeThinkingConfig(result);
 
   // Always ensure tool_calls have id (some providers require it)
@@ -106,6 +106,10 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
   // Expose to downstream translators (gemini-cli/antigravity envelopes) that run after envelope is stripped
   if (credentials) credentials._clientSessionId = clientSessionId;
 
+  const translationOptions = {
+    preserveCacheControl: targetFormat === FORMATS.OPENAI && !!PROVIDERS[provider]?.quirks?.preserveCacheControl,
+  };
+
   // If same format, skip translation steps
   if (sourceFormat !== targetFormat) {
     // Direct route: if a translator is registered for this exact source:target
@@ -113,14 +117,14 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
     // pairs like claude:kiro (avoids the claude->openai->kiro double-hop).
     const directFn = requestRegistry.get(`${sourceFormat}:${targetFormat}`);
     if (directFn) {
-      result = directFn(model, result, stream, credentials);
+      result = directFn(model, result, stream, credentials, translationOptions);
       carryCompatibilityMetadata(result);
     } else {
       // Step 1: source -> openai (if source is not openai)
       if (sourceFormat !== FORMATS.OPENAI) {
         const toOpenAI = requestRegistry.get(`${sourceFormat}:${FORMATS.OPENAI}`);
         if (toOpenAI) {
-          result = toOpenAI(model, result, stream, credentials);
+          result = toOpenAI(model, result, stream, credentials, translationOptions);
           carryCompatibilityMetadata(result);
           // Log OpenAI intermediate format
           reqLogger?.logOpenAIRequest?.(result);
@@ -151,9 +155,7 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
   // Always normalize to clean OpenAI format when target is OpenAI
   // This handles hybrid requests (e.g., OpenAI messages + Claude tools)
   if (targetFormat === FORMATS.OPENAI) {
-    result = filterToOpenAIFormat(result, {
-      preserveCacheControl: !!PROVIDERS[provider]?.quirks?.preserveCacheControl,
-    });
+    result = filterToOpenAIFormat(result, translationOptions);
   }
 
   // Final step: prepare request for Claude format endpoints
