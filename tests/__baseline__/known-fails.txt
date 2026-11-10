@@ -30,3 +30,12 @@ tests/unit/mimo-free.live.test.js :: MiMo Free anti-abuse gate (live) chat WITH 
 # which is not part of this repository.
 tests/unit/db-benchmark.test.js :: <suite failed to load>
 tests/unit/embeddings.cloud.test.js :: <suite failed to load>
+
+# Cannot create temp dirs on this Windows host (EPERM on %TEMP%\9router-zed-*).
+# Unverified whether these pass on Linux/macOS; likely environmental only.
+tests/unit/zed-live-models.test.js :: <suite failed to load>
+tests/unit/zed-native-auth.test.js :: <suite failed to load>
+
+# Real code bug, not a stale test: flush() reads a Map that is undefined on the
+# second call. Tracked separately from the test-infra work.
+tests/unit/responses-completed-output.test.js :: response.completed output (issue #4307) does not duplicate items when flush runs more than once

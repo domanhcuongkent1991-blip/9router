@@ -89,15 +89,21 @@ describe("Qoder capabilities", () => {
 });
 
 describe("Qoder registry", () => {
-  it("advertises Sonus and Cantus", () => {
+  // The registry is the *advertised* list. 2c186c7e pruned it to the three ids
+  // the per-account catalog actually enables (qfmodel/dfmodel/qmodel_38max);
+  // smodel/cmodel stay reachable through QODER_STATIC_MODEL_CONFIGS above but
+  // are no longer offered in the picker.
+  it("advertises only the ids the per-account catalog enables", () => {
     const ids = (qoderRegistry.models || []).map((m) => m.id);
-    expect(ids).toContain("smodel");
-    expect(ids).toContain("cmodel");
+    expect(ids).toEqual(["qfmodel", "dfmodel", "qmodel_38max"]);
+    expect(ids).not.toContain("smodel");
+    expect(ids).not.toContain("cmodel");
   });
 
   it("uses the display names from the Qoder picker", () => {
     const byId = Object.fromEntries((qoderRegistry.models || []).map((m) => [m.id, m.name]));
-    expect(byId.smodel).toBe("Sonus");
-    expect(byId.cmodel).toBe("Cantus");
+    expect(byId.qfmodel).toBe("Qwen3.8-Flash");
+    expect(byId.dfmodel).toBe("DeepSeek-V4.1-Flash");
+    expect(byId.qmodel_38max).toBe("Qwen3.8-Max");
   });
 });

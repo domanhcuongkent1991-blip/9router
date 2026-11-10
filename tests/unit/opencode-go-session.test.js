@@ -19,6 +19,12 @@ const TRANSPORTS = [
   { format: "openai-responses", baseUrl: "https://opencode.ai/inference/go/openai/v1/responses", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
 ];
 
+// translatedSession() in open-sse/executors/opencode-go.js emits
+// `ses_` + 12 hex chars (6-byte descending timestamp) + 14 base62 chars
+// (sha256-derived). Zen rejects hash-only prefixes with 403 FreeTierError
+// (probed 2026-10-13), so the mixed shape is deliberate, not a bug.
+const SESSION_ID_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+
 function makeCredentials(overrides = {}) {
   return {
     apiKey: "test-key",
@@ -55,7 +61,7 @@ describe("OpenCode Go x-opencode-session", () => {
 
     expect(executor.constructor.name).toBe("OpenCodeGoExecutor");
     expect(prepared).not.toBe(credentials);
-    expect(prepared._opencodeGoSession).toMatch(/^ses_[0-9a-f]{32}$/);
+    expect(prepared._opencodeGoSession).toMatch(SESSION_ID_RE);
     expect(credentials).not.toHaveProperty("_opencodeGoSession");
     expect(executor).not.toHaveProperty("_currentSessionId");
     expect(executor).not.toHaveProperty("_opencodeGoSession");
@@ -76,10 +82,10 @@ describe("OpenCode Go x-opencode-session", () => {
       credentials: makeCredentials({ rawHeaders: { "x-opencode-session": "x".repeat(257) } }),
     });
 
-    expect(prepared._opencodeGoSession).toMatch(/^ses_[0-9a-f]{32}$/);
+    expect(prepared._opencodeGoSession).toMatch(SESSION_ID_RE);
   });
 
-  it("keeps the same translated conversation stable across all transports", () => {
+  it("keeps the translated conversation stable across transports apart from the fresh prefix", () => {
     const executor = getExecutor("opencode-go");
     const values = TRANSPORTS.map((runtimeTransport) => {
       const { prepared } = prepare(executor, {
@@ -88,8 +94,12 @@ describe("OpenCode Go x-opencode-session", () => {
       return executor.buildHeaders(prepared, true)["x-opencode-session"];
     });
 
-    expect(new Set(values).size).toBe(1);
-    expect(values[0]).toMatch(/^ses_[0-9a-f]{32}$/);
+    // The 12-hex prefix is a fresh descending timestamp on every call — Zen
+    // rejects stale/hash-derived prefixes with 403 FreeTierError (6bf8b207), so
+    // only the 14-char sha256-derived suffix has to stay stable.
+    const suffixes = values.map((v) => v.slice(-14));
+    expect(new Set(suffixes).size).toBe(1);
+    for (const v of values) expect(v).toMatch(SESSION_ID_RE);
     expect(values[0]).not.toContain("conversation-a");
   });
 
@@ -120,8 +130,10 @@ describe("OpenCode Go x-opencode-session", () => {
     const first = prepare(executor, options).prepared._opencodeGoSession;
     const second = prepare(executor, options).prepared._opencodeGoSession;
 
-    expect(first).toBe(second);
-    expect(first).toMatch(/^ses_[0-9a-f]{32}$/);
+    // Same caveat as above: the timestamp prefix rotates, the identity suffix
+    // (derived from connectionId + body) is what stays opaque and stable.
+    expect(first.slice(-14)).toBe(second.slice(-14));
+    expect(first).toMatch(SESSION_ID_RE);
     expect(first).not.toContain("fallback-connection");
   });
 
@@ -137,7 +149,7 @@ describe("OpenCode Go x-opencode-session", () => {
       clientTool: "codex",
     });
 
-    expect(result.headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{32}$/);
+    expect(result.headers["x-opencode-session"]).toMatch(SESSION_ID_RE);
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0][1].headers["x-opencode-session"]).toBe(result.headers["x-opencode-session"]);
     expect(credentials).not.toHaveProperty("_opencodeGoSession");
