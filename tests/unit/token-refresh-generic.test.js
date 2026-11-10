@@ -7,27 +7,25 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { installFetchMock, jsonResponse } from "../helpers/fetch-mock.js";
 
 // proxyFetch since v0.5.116 bypasses globalThis.fetch and calls undici's fetch
 // directly (global fetch breaks undici ProxyAgent with UND_ERR_INVALID_ARG),
-// so the mock has to intercept the undici module, not global.fetch.
+// so the mock has to cover both layers — see the helper.
 function mockFetchOnce(payload, { ok = true, status = 200 } = {}) {
-  const fn = vi.fn().mockResolvedValue({
-    ok,
-    status,
-    json: () => Promise.resolve(payload),
-    text: () => Promise.resolve(JSON.stringify(payload)),
-  });
-  vi.doMock("undici", async (importOriginal) => {
-    const actual = await importOriginal();
-    return { ...actual, fetch: fn };
-  });
+  const fn = installFetchMock(
+    jsonResponse(payload, {
+      ok,
+      status,
+      text: async () => JSON.stringify(payload),
+    }),
+  );
   return fn;
 }
 
 describe("refreshAccessToken — config-driven profiles", () => {
   beforeEach(() => { vi.clearAllMocks(); vi.resetModules(); });
-  afterEach(() => { vi.doUnmock("undici"); });
+  afterEach(() => { vi.doUnmock("undici"); vi.unstubAllGlobals(); });
 
   it("iflow: Basic Auth header from clientId:clientSecret, form body keeps client_secret", async () => {
     const fm = mockFetchOnce({ access_token: "if-acc", refresh_token: "if-rot", expires_in: 3600 });

@@ -1,10 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { applyFetchMock } from "../helpers/fetch-mock.js";
 
 describe("xai/oauth service", () => {
+  let fetchMock;
+
   beforeEach(() => {
     vi.resetModules();
     vi.restoreAllMocks();
-    vi.stubGlobal("fetch", vi.fn());
+    // Covers both layers: bare `fetch` here, and the undici fetch that
+    // proxyFetch.rawFetch calls once providers.js is imported.
+    fetchMock = applyFetchMock(vi.fn());
+  });
+
+  afterEach(() => {
+    vi.doUnmock("undici");
+    vi.unstubAllGlobals();
   });
 
   it("validates discovered endpoints are https x.ai URLs", async () => {
@@ -22,7 +32,7 @@ describe("xai/oauth service", () => {
   });
 
   it("discovers endpoints without custom user-agent headers", async () => {
-    fetch.mockResolvedValueOnce({
+    fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         authorization_endpoint: "https://auth.x.ai/oauth2/authorize",
@@ -35,7 +45,7 @@ describe("xai/oauth service", () => {
       authorizeUrl: "https://auth.x.ai/oauth2/authorize",
       tokenUrl: "https://auth.x.ai/oauth2/token",
     });
-    expect(fetch).toHaveBeenCalledWith(
+    expect(fetchMock).toHaveBeenCalledWith(
       "https://auth.x.ai/.well-known/openid-configuration",
       expect.objectContaining({ headers: { Accept: "application/json" } })
     );
@@ -64,12 +74,10 @@ describe("xai/oauth service", () => {
   });
 
   it("generates dashboard auth data with CLIProxyAPI PKCE size and discovered endpoints", async () => {
-    // Capture the mock before importing providers.js: that import chain loads
-    // open-sse/utils/proxyFetch.js, which replaces globalThis.fetch with its
-    // undici-backed patchedFetch on import. Bare `fetch` would resolve to
-    // patchedFetch afterwards, so hold the vi.fn() reference up front and
-    // re-stub with it to keep every call below off the real network.
-    const fetchMock = fetch;
+    // providers.js pulls in open-sse/utils/proxyFetch.js, which replaces
+    // globalThis.fetch on import. `fetchMock` was captured in beforeEach and
+    // both layers already point at it (see applyFetchMock), so the import below
+    // cannot knock the stub off the real network.
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -79,7 +87,6 @@ describe("xai/oauth service", () => {
     });
 
     const { generateAuthData } = await import("../../src/lib/oauth/providers.js");
-    vi.stubGlobal("fetch", fetchMock);
     const data = await generateAuthData("xai", "http://127.0.0.1:56121/callback");
     const parsed = new URL(data.authUrl);
 
@@ -92,7 +99,6 @@ describe("xai/oauth service", () => {
   });
 
   it("exchanges dashboard codes against the discovered xAI token endpoint", async () => {
-    const fetchMock = fetch;
     fetchMock
       .mockResolvedValueOnce({
         ok: true,
@@ -111,7 +117,6 @@ describe("xai/oauth service", () => {
       });
 
     const { exchangeTokens } = await import("../../src/lib/oauth/providers.js");
-    vi.stubGlobal("fetch", fetchMock);
     const tokens = await exchangeTokens(
       "xai",
       "auth-code",

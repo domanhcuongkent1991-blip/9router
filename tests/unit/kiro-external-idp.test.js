@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { installFetchMock, jsonResponse } from "../helpers/fetch-mock.js";
 
 // proxyFetch since v0.5.116 calls undici's fetch directly instead of
-// globalThis.fetch, so the mock intercepts the undici module.
+// globalThis.fetch, so the mock has to cover both layers — see the helper.
 const TEST_CLIENT_ID = "00000000-0000-4000-8000-000000000000";
 const TEST_SCOPE = `api://${TEST_CLIENT_ID}/codewhisperer:conversations offline_access`;
 const TEST_EMAIL = "user@example.com";
@@ -22,21 +23,17 @@ describe("Kiro external_idp (CLIProxyAPI) import and refresh", () => {
     vi.doUnmock("@/models");
     vi.doUnmock("../../open-sse/utils/proxyFetch.js");
     vi.doUnmock("undici");
+    vi.unstubAllGlobals();
   });
 
   it("refreshes Microsoft external_idp tokens with form-encoded OAuth body", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({
+    const fetchMock = installFetchMock(
+      jsonResponse({
         access_token: "new-access-token",
         refresh_token: "rotated-refresh-token",
         expires_in: 3600,
       }),
-    });
-    vi.doMock("undici", async (importOriginal) => {
-      const actual = await importOriginal();
-      return { ...actual, fetch: fetchMock };
-    });
+    );
 
     const { refreshKiroToken } = await import("../../open-sse/services/tokenRefresh.js");
     const result = await refreshKiroToken("old-refresh-token", {
@@ -81,11 +78,7 @@ describe("Kiro external_idp (CLIProxyAPI) import and refresh", () => {
 
   it("rejects external_idp refresh endpoints outside Microsoft login", async () => {
     const { refreshKiroToken } = await import("../../open-sse/services/tokenRefresh.js");
-    const fetchMock = vi.fn();
-    vi.doMock("undici", async (importOriginal) => {
-      const actual = await importOriginal();
-      return { ...actual, fetch: fetchMock };
-    });
+    const fetchMock = installFetchMock(vi.fn());
 
     const result = await refreshKiroToken("old-refresh-token", {
       authMethod: "external_idp",

@@ -30,11 +30,14 @@ async function loadExecutor(fetchMock, useProxy = true) {
   }
   if (useProxy) vi.stubEnv("HTTPS_PROXY", "http://proxy.test:3128");
   // Exercise the real proxyAwareFetch: since v0.5.116 it calls undici's fetch
-  // directly instead of globalThis.fetch, so intercept the undici module.
+  // directly instead of globalThis.fetch, so the mock must cover both layers.
+  // `fetchMock` arrives pre-built from the caller; install it without replacing
+  // its implementation.
   vi.doMock("undici", async (importOriginal) => {
     const actual = await importOriginal();
     return { ...actual, fetch: fetchMock };
   });
+  vi.stubGlobal("fetch", fetchMock);
   const { QoderExecutor } = await import("../../open-sse/executors/qoder.js");
   return new QoderExecutor();
 }

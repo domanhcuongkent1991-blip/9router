@@ -210,11 +210,14 @@ describe("cline free-models envelope in nonStreamingHandler", () => {
 describe("cline /api/v1/models aggregation (resolveClineModels vs resolveClinepassModels)", () => {
   const API_MODELS_URL = "https://api.cline.bot/api/v1/models";
 
+  // Paid catalog ids (no `:free` suffix) are dropped by resolveClineModels since
+  // c1707921 "expose free tier only"; keep both shapes here so the free-only
+  // filter stays pinned.
   const API_RESPONSE = [
     { id: "cline-pass/deepseek-v4-flash", name: "DeepSeek V4 Flash" },
     { id: "cline-pass/glm-5.2", name: "GLM-5.2" },
     { id: "z-ai/glm-5.3-flash", name: "GLM-5.3 Flash" },
-    { id: "z-ai/deepseek-v4-flash", name: "DeepSeek V4 Flash (Free)" },
+    { id: "z-ai/deepseek-v4-flash:free", name: "DeepSeek V4 Flash (Free)" },
   ];
 
   let fetchMock;
@@ -228,7 +231,7 @@ describe("cline /api/v1/models aggregation (resolveClineModels vs resolveClinepa
     vi.unstubAllGlobals();
   });
 
-  it("resolveClineModels returns all models (including free-tier)", async () => {
+  it("resolveClineModels returns free-tier models only", async () => {
     const { resolveClineModels } = await import("../../open-sse/services/clinepassModels.js");
     fetchMock.mockResolvedValue({
       ok: true,
@@ -236,11 +239,12 @@ describe("cline /api/v1/models aggregation (resolveClineModels vs resolveClinepa
     });
     const result = await resolveClineModels({ accessToken: "test-token" });
     expect(result).not.toBeNull();
-    expect(result.models).toHaveLength(4);
+    // Only the `:free` catalog id survives the free-tier filter.
+    expect(result.models).toHaveLength(1);
     const ids = result.models.map((m) => m.id);
-    expect(ids).toContain("cline-pass/deepseek-v4-flash");
-    expect(ids).toContain("z-ai/glm-5.3-flash");
-    expect(ids).toContain("z-ai/deepseek-v4-flash");
+    expect(ids).toEqual(["z-ai/deepseek-v4-flash:free"]);
+    expect(ids).not.toContain("cline-pass/deepseek-v4-flash");
+    expect(ids).not.toContain("z-ai/glm-5.3-flash");
   });
 
   it("resolveClinepassModels returns only cline-pass/ models", async () => {
@@ -266,7 +270,9 @@ describe("cline /api/v1/models aggregation (resolveClineModels vs resolveClinepa
     });
     const result = await resolveClineModels({ accessToken: "test-token" });
     expect(result).not.toBeNull();
-    expect(result.models).toHaveLength(4);
+    // Envelope unwrap is orthogonal to the free-only filter: one `:free` id.
+    expect(result.models).toHaveLength(1);
+    expect(result.models[0].id).toBe("z-ai/deepseek-v4-flash:free");
   });
 
   it("resolveClineModels returns null when no token", async () => {

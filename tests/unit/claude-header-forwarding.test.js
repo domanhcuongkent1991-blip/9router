@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { applyFetchMock } from "../helpers/fetch-mock.js";
 
 // ─── DefaultExecutor.buildHeaders() ──────────────────────────────────────────
 
@@ -284,10 +285,7 @@ describe("proxyAwareFetch — api.anthropic.com routing", () => {
       text: async () => JSON.stringify({ id: "msg_test" }),
       json: async () => ({ id: "msg_test" }),
     });
-    vi.doMock("undici", async (importOriginal) => {
-      const actual = await importOriginal();
-      return { ...actual, fetch: fetchMock };
-    });
+    applyFetchMock(fetchMock);
 
     vi.resetModules();
     const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
@@ -315,10 +313,7 @@ describe("proxyAwareFetch — api.anthropic.com routing", () => {
       text: async () => "{}",
       json: async () => ({}),
     });
-    vi.doMock("undici", async (importOriginal) => {
-      const actual = await importOriginal();
-      return { ...actual, fetch: fetchMock };
-    });
+    applyFetchMock(fetchMock);
 
     vi.resetModules();
     const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
@@ -342,10 +337,7 @@ describe("proxyAwareFetch — api.anthropic.com routing", () => {
       text: async () => "{}",
       json: async () => ({}),
     });
-    vi.doMock("undici", async (importOriginal) => {
-      const actual = await importOriginal();
-      return { ...actual, fetch: fetchMock };
-    });
+    applyFetchMock(fetchMock);
 
     vi.resetModules();
     const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
