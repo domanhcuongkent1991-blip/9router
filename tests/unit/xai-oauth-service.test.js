@@ -64,7 +64,13 @@ describe("xai/oauth service", () => {
   });
 
   it("generates dashboard auth data with CLIProxyAPI PKCE size and discovered endpoints", async () => {
-    fetch.mockResolvedValueOnce({
+    // Capture the mock before importing providers.js: that import chain loads
+    // open-sse/utils/proxyFetch.js, which replaces globalThis.fetch with its
+    // undici-backed patchedFetch on import. Bare `fetch` would resolve to
+    // patchedFetch afterwards, so hold the vi.fn() reference up front and
+    // re-stub with it to keep every call below off the real network.
+    const fetchMock = fetch;
+    fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         authorization_endpoint: "https://auth.x.ai/oauth2/authorize-from-discovery",
@@ -73,6 +79,7 @@ describe("xai/oauth service", () => {
     });
 
     const { generateAuthData } = await import("../../src/lib/oauth/providers.js");
+    vi.stubGlobal("fetch", fetchMock);
     const data = await generateAuthData("xai", "http://127.0.0.1:56121/callback");
     const parsed = new URL(data.authUrl);
 
@@ -104,6 +111,7 @@ describe("xai/oauth service", () => {
       });
 
     const { exchangeTokens } = await import("../../src/lib/oauth/providers.js");
+    vi.stubGlobal("fetch", fetchMock);
     const tokens = await exchangeTokens(
       "xai",
       "auth-code",

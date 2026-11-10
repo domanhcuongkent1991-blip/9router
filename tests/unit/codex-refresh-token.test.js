@@ -9,17 +9,16 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const originalFetch = global.fetch;
-
+// proxyFetch since v0.5.116 calls undici's fetch directly instead of
+// globalThis.fetch, so the mock intercepts the undici module.
 describe("Codex Refresh Token", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-    global.fetch = originalFetch;
   });
 
   afterEach(() => {
-    global.fetch = originalFetch;
+    vi.doUnmock("undici");
   });
 
   function mockFetchWithJson(payload) {
@@ -27,7 +26,10 @@ describe("Codex Refresh Token", () => {
       ok: true,
       json: () => Promise.resolve(payload),
     });
-    global.fetch = fetchMock;
+    vi.doMock("undici", async (importOriginal) => {
+      const actual = await importOriginal();
+      return { ...actual, fetch: fetchMock };
+    });
     return fetchMock;
   }
 

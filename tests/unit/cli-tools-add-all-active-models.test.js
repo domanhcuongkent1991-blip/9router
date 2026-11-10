@@ -21,9 +21,12 @@ describe("buildModelGroups / collectModelValues for Add All Active Models", () =
     );
 
     // Static registry entries for OpenCode Free must survive with zero connections.
-    // (jev-1.13-free is kind: "systemone", so the LLM view hides it — picker parity.)
-    expect(values).toContain("oc/union-alpha");
-    expect(values).toContain("oc/muse-spark-1.2-contributor-free");
+    // Fixture ids follow the fork's registry (open-sse/providers/registry/opencode.js):
+    // the upstream picks muse-spark-1.2/union-alpha died there (410 deprecated).
+    expect(values).toContain("oc/big-pickle");
+    expect(values).toContain("oc/beam-free");
+    // No registry model carries kind "systemone" any more, so none of them may leak
+    // through under an id the registry doesn't list.
     expect(values).not.toContain("oc/jev-1.13-free");
   });
 
@@ -62,13 +65,12 @@ describe("buildModelGroups / collectModelValues for Add All Active Models", () =
         allConnections: [],
         modelAliases: {},
         customModels: [{ providerAlias: "oc", id: "big-pickle", type: "llm" }],
-        disabledModels: { oc: ["big-pickle", "union-alpha"] },
+        disabledModels: { oc: ["big-pickle"] },
       })
     );
 
     expect(values).not.toContain("oc/big-pickle");
-    expect(values).not.toContain("oc/union-alpha");
-    expect(values).toContain("oc/muse-spark-1.2-contributor-free");
+    expect(values).toContain("oc/beam-free");
   });
 
   it("routes connections through their provider alias", () => {
@@ -84,8 +86,8 @@ describe("buildModelGroups / collectModelValues for Add All Active Models", () =
 
     // No-auth providers are always offered, so assert the connection's own models
     // resolve under the routing alias rather than that they are the only entries.
-    expect(values).toContain("oc/muse-spark-1.2-contributor-free");
-    expect(values).toContain("oc/union-alpha");
+    expect(values).toContain("oc/big-pickle");
+    expect(values).toContain("oc/beam-free");
     expect(values.filter((value) => value.startsWith("oc/")).length).toBeGreaterThan(1);
   });
 
